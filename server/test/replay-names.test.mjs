@@ -183,6 +183,32 @@ test('accountStore: a name shows by default; an account hides it and shows it ag
   assert.deepEqual(store.replayHidden([beto], ['Beto']), { ids: [], names: [] });
 });
 
+test('accountStore: a database already at schema version 2 (production after #72) gets replay_names on the next start, outside the once-only migration', async () => {
+  // Production as #72 left it: migrated to version 2, and no replay_names (this build's table).
+  const db = new DatabaseSync(':memory:');
+  new AccountStore(sqlOn(db), txOn(db)).migrate();
+  db.exec('DROP TABLE replay_names');
+  const pw = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
+  const before = new AccountStore(sqlOn(db), txOn(db));
+  const ana = before.register('Ana', pw, [], H('1'), 1).userId;
+  assert.equal(before.schemaVersion(), 2);
+  // This build starts on it: migrateTo2 returns early (version 2), and the table is there all the same.
+  const store = new AccountStore(sqlOn(db), txOn(db));
+  store.migrate();
+  assert.equal(store.schemaVersion(), 2, 'still version 2: no migration ran again');
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'replay_names'").get(), 'replay_names created');
+  assert.deepEqual(store.replayName(ana), { hidden: false });
+  assert.deepEqual(store.setReplayName(ana, true, 2), { hidden: true });
+  assert.deepEqual(store.replayHidden([ana], ['Ana']), { ids: [ana], names: ['Ana'] });
+  // And AccountsDO's /replay-hidden answers (else every public list and view would be 503).
+  db.exec('DROP TABLE replay_names');
+  const actx = { storage: { sql: sqlOn(db), transactionSync: txOn(db), getAlarm: async () => null, setAlarm: async () => undefined }, blockConcurrencyWhile: (fn) => fn() };
+  const obj = new AccountsDO(actx, { JWT_SECRET: SECRET });
+  const res = await obj.fetch(new Request('https://accounts/replay-hidden', { method: 'POST', headers: { [INTERNAL_HEADER]: await internalSecret(SECRET), 'content-type': 'application/json' }, body: JSON.stringify({ ids: [ana], names: [] }) }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ids: [], names: [] }, 'the table is new again: nobody hides');
+});
+
 test('AccountsDO: /replay-name, /replay-name/set and /replay-hidden behind the internal header, bounded', async () => {
   const { accounts } = await world();
   const id = await account(accounts, 'Carla');
