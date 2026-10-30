@@ -1919,7 +1919,9 @@ async function reauthCodeVerify(c: RouteContext): Promise<Response> {
 //                                 { until } | 429 | 503. Not from a TV.
 //   POST /api/me/email/verify     Bearer (+ cookie) { attempt, code } -> MeInfo: the add, the change (M6 with the
 //                                 7-day undo to the old address, which is held; the other devices signed out) or
-//                                 the move (M12) | 400 code_wrong | 410 code_expired | 409 email_taken / move_refused
+//                                 the move (M12) | 400 code_wrong | 410 code_expired | 409 email_taken / move_refused |
+//                                 429 / 503 when M6 or M12 could not go (mail off, the day's notice lane full):
+//                                 then nothing changes, so no change ever applies without its undo link
 //   POST /api/auth/email/confirm  { token } -> { ok, name, email }: the same by the mailed link, from any device
 //   POST /api/auth/email/undo/peek { token } -> { name, email }: whom M6's undo is for (consumes nothing)
 //   POST /api/auth/email/undo     { token, password } -> AccountSession + cookies (level 2): the old address back,
@@ -2005,7 +2007,8 @@ async function meEmailVerify(c: RouteContext): Promise<Response> {
   const b = await readJson<{ attempt?: unknown; code?: unknown; lang?: unknown }>(c.request);
   const proof = proofBody(b);
   if (proof === null || 'token' in proof) return error(400, 'bad_request');
-  const r = await accountsJson<Record<string, unknown> & { mail?: unknown }>(c.env, '/me-email-verify', { userId: s.sub, attempt: proof.attempt, code: proof.code, keep: await keepOf(c), providers: enabledProviders(c.env), lang: langOf(b?.lang) });
+  const mailOff = (await mailRefusal(c)) !== null;
+  const r = await accountsJson<Record<string, unknown> & { mail?: unknown }>(c.env, '/me-email-verify', { userId: s.sub, attempt: proof.attempt, code: proof.code, keep: await keepOf(c), providers: enabledProviders(c.env), lang: langOf(b?.lang), mailOff });
   if (!r.ok) return noStore(r.res);
   const { mail, ...me } = r.data;
   sendMails(c, mail);
@@ -2017,7 +2020,8 @@ async function emailConfirm(c: RouteContext): Promise<Response> {
   const b = await readJson<{ token?: unknown; lang?: unknown }>(c.request);
   const token = tokenOf(b);
   if (token === null) return error(400, 'bad_request');
-  const r = await accountsJson<{ ok: true; name: string; email: string; mail?: unknown }>(c.env, '/email-confirm', { token, keep: await keepOf(c), providers: enabledProviders(c.env), lang: langOf(b?.lang) });
+  const mailOff = (await mailRefusal(c)) !== null;
+  const r = await accountsJson<{ ok: true; name: string; email: string; mail?: unknown }>(c.env, '/email-confirm', { token, keep: await keepOf(c), providers: enabledProviders(c.env), lang: langOf(b?.lang), mailOff });
   if (!r.ok) return noStore(r.res);
   sendMails(c, r.data.mail);
   return json({ ok: true, name: r.data.name, email: r.data.email } satisfies EmailConfirmAnswer, 200, NO_STORE);

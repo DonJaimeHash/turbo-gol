@@ -493,6 +493,108 @@ test('the mailed link (/account#email=): POST /api/auth/email/confirm applies it
 
 // ---- preferences ------------------------------------------------------------------------------------------
 
+// ---- M6 and M12 always go (the review of PR 9): a change that cannot mail its undo does not apply ----
+
+/** The day's notice lane set so that `left` more mails fit under the day's cap (EMAIL_DAILY_CAP: 100 by default). */
+function laneLeft(obj, left, cap = 100) {
+  const day = new Date().toISOString().slice(0, 10);
+  const d = obj.store.mailDay(day);
+  obj.store.sql.exec("INSERT OR IGNORE INTO mail_day (day, lane) VALUES (?, 'notice')", day);
+  obj.store.sql.exec("UPDATE mail_day SET sent = ? WHERE day = ? AND lane = 'notice'", cap - left - d.signup.sent - d.account.sent, day);
+}
+const undoRows = (obj, id) => obj.store.sql.exec("SELECT COUNT(*) AS n FROM mail_tokens WHERE user_id = ? AND purpose = 'undo_email' AND used_at = 0", id).toArray()[0].n;
+
+test("five notices first fill the account's cap of the day (M4 a sixth time is skipped), and a change still mails M6 with its undo", async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const a = await signUp(env, outbox, 'duena@x.com', ip(0), { username: 'Duena_Cupo' });
+  const cookie = '__Host-tg_rt=' + a.rt;
+  // Whoever typed the password (level 2) changes it six times: five M4 notices, the account's cap.
+  let cur = KEY;
+  for (let i = 0; i < 6; i++) {
+    const next = await ACC.passwordKey('clave del ladrón número ' + i);
+    const r = await post(env, '/api/me/password', { ip: ip(0), bearer: a.json.session, cookie, body: { current: cur, password: next, lang: 'es' } });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    cur = next;
+  }
+  const m4 = () => outbox.filter((m) => m.to === 'duena@x.com' && /contraseña/i.test(m.subject)).length;
+  assert.equal(m4(), 5, 'the sixth M4 is skipped: the cap still holds for the other notices');
+  const m6 = await changeTo(env, outbox, a, 'ladron@x.com', ip(0));
+  assert.equal(m6.to, 'duena@x.com', 'M6 goes all the same');
+  assert.equal(row(obj, a.json.playerId).email, 'ladron@x.com');
+  assert.equal(undoRows(obj, a.json.playerId), 1);
+  assert.equal(outbox.filter((m) => m.to === 'duena@x.com' && linkIn(m)?.kind === 'undo').length, 1);
+});
+
+test('the day\'s notice lane full, or mail off: a change by its code or its link answers 429 / 503 and changes nothing; once there is room the same code applies it and M6 goes; an add needs no notice and applies', async () => {
+  const { env, obj, outbox, flags } = makeEnv();
+  const ip = ips();
+  const a = await signUp(env, outbox, 'llena@x.com', ip(0), { username: 'Ana_Llena' });
+  const cookie = '__Host-tg_rt=' + a.rt;
+  const ask = await askEmail(env, a.json.session, 'nueva.llena@x.com', ip(0));
+  assert.equal(ask.status, 200);
+  const m5 = outbox.at(-1);
+  const unchanged = () => {
+    assert.equal(row(obj, a.json.playerId).email, 'llena@x.com', 'the address unchanged');
+    assert.deepEqual([undoRows(obj, a.json.playerId), holdCount(obj)], [0, 0], 'no undo row, no hold');
+    assert.ok(!outbox.some((m) => linkIn(m)?.kind === 'undo'), 'no M6');
+  };
+  // The lane is full (an attacker's own accounts' notices, say): no room for M6.
+  laneLeft(obj, 0);
+  const byCode = await verifyEmail(env, a.json.session, ask.json.attempt, codeIn(m5), ip(0), cookie);
+  assert.deepEqual([byCode.status, byCode.json.error], [429, 'email_rate_limited']);
+  assert.ok(byCode.json.retryAfterMs > 0, 'until tomorrow');
+  const byLink = await post(env, '/api/auth/email/confirm', { ip: ip(1), body: { token: linkIn(m5).token } });
+  assert.deepEqual([byLink.status, byLink.json.error], [429, 'email_rate_limited']);
+  unchanged();
+  // Mail off (the kill flag) with room in the lane: 503, nothing changes.
+  laneLeft(obj, 1);
+  flags.set('email_off', '1');
+  const off = await verifyEmail(env, a.json.session, ask.json.attempt, codeIn(m5), ip(0), cookie);
+  assert.deepEqual([off.status, off.json.error], [503, 'email_paused']);
+  assert.deepEqual([(await post(env, '/api/auth/email/confirm', { ip: ip(1), body: { token: linkIn(m5).token } })).status], [503]);
+  unchanged();
+  // An add mails nothing after its code: it applies with the lane full and mail off.
+  const disc = storeAccount(obj, 'Solo_Lleno', { pw: null, discord: 'd-lleno' });
+  flags.delete('email_off');
+  laneLeft(obj, 50); // its start, in the account lane (90 % of the day)
+  const add = await askEmail(env, await sessionOf(env, disc, 'Solo_Lleno', { authAt: Date.now(), authLvl: 1 }), 'solo.lleno@x.com', ip(2));
+  assert.equal(add.status, 200, JSON.stringify(add.json));
+  laneLeft(obj, 0);
+  flags.set('email_off', '1');
+  const added = await post(env, '/api/auth/email/confirm', { ip: ip(2), body: { token: linkIn(outbox.at(-1)).token } });
+  assert.equal(added.status, 200, JSON.stringify(added.json));
+  assert.equal(row(obj, disc).email, 'solo.lleno@x.com');
+  // Room again: the same code (still live) applies the change, and M6 goes.
+  flags.delete('email_off');
+  laneLeft(obj, 1);
+  const ok = await verifyEmail(env, a.json.session, ask.json.attempt, codeIn(m5), ip(0), cookie);
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  assert.equal(row(obj, a.json.playerId).email, 'nueva.llena@x.com');
+  assert.equal(outbox.at(-1).to, 'llena@x.com');
+  assert.equal(linkIn(outbox.at(-1)).kind, 'undo');
+});
+
+test('a change that is also a move needs room for M6 and M12: one left answers 429 and moves nothing; with two, both go', async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const a = await signUp(env, outbox, 'ana.mueve@x.com', ip(0), { username: 'Ana_Dos_Avisos' });
+  const bea = storeAccount(obj, 'Bea_Dos_Avisos', { pw: null, email: 'bea.dos@x.com', discord: 'd-bea-dos' });
+  const ask = await askEmail(env, a.json.session, 'bea.dos@x.com', ip(0));
+  assert.equal(ask.status, 200);
+  const code = codeIn(outbox.at(-1));
+  laneLeft(obj, 1);
+  const one = await verifyEmail(env, a.json.session, ask.json.attempt, code, ip(0), '__Host-tg_rt=' + a.rt);
+  assert.deepEqual([one.status, one.json.error], [429, 'email_rate_limited']);
+  assert.deepEqual([row(obj, a.json.playerId).email, row(obj, bea).email], ['ana.mueve@x.com', 'bea.dos@x.com'], 'nothing moved');
+  laneLeft(obj, 2);
+  const two = await verifyEmail(env, a.json.session, ask.json.attempt, code, ip(0), '__Host-tg_rt=' + a.rt);
+  assert.equal(two.status, 200, JSON.stringify(two.json));
+  assert.deepEqual([row(obj, a.json.playerId).email, row(obj, bea).email], ['bea.dos@x.com', null]);
+  const last = outbox.slice(-2).map((m) => [m.to, m.subject.split(' · ')[0]]);
+  assert.deepEqual(last.map(([to]) => to).sort(), ['ana.mueve@x.com', 'bea.dos@x.com'], 'M6 to the old address and M12 to the moved one: ' + JSON.stringify(last));
+});
+
 test("me/prefs: the language and zone of the account's mail (Idioma while signed in); a TV gets 403; anything else is bad_prefs", async () => {
   const { env, obj, outbox } = makeEnv();
   const ip = ips();

@@ -845,11 +845,12 @@ export class AccountsDO extends DurableObject<Env> {
    * The day's lane may carry one more mail (section 4.7): not paused (the signup lane's automatic
    * pause) and below its share of EMAIL_DAILY_CAP; else its refusal, the same for every address.
    */
-  private laneRefusal(lane: MailLane, now: number): Response | null {
+  private laneRefusal(lane: MailLane, now: number, need = 1): Response | null {
     const day = this.store.mailDay(mailDay(now));
     if (lane === 'signup' && day.signup.pausedUntil > now) return error(503, 'email_paused', 'Ahora no podemos enviar correos. Inténtalo en unos minutos.');
     const total = day.signup.sent + day.account.sent + day.notice.sent;
-    if (laneAllows(lane, total, dailyCap(this.env))) return null;
+    // `need` mails at once (an applied change and move: M6 and M12) fit when the last of them does.
+    if (laneAllows(lane, total + need - 1, dailyCap(this.env))) return null;
     const tomorrow = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate() + 1);
     return capAnswer('email_rate_limited', tomorrow - now);
   }
@@ -1026,10 +1027,12 @@ export class AccountsDO extends DurableObject<Env> {
   }
 
   /**
-   * What an applied add, change or move mails (§2.6), each in the notice lane under its account's own
-   * cap of notices: a change, M6 to the old address with the undo link (both languages; the new one
-   * masked); a move, M12 to the address, naming both accounts (the one that lost it signs in with its
-   * providers). An add mails nothing more: its code was the proof.
+   * What an applied add, change or move mails (§2.6), in the notice lane: a change, M6 to the old
+   * address with the undo link (both languages; the new one masked); a move, M12 to the address,
+   * naming both accounts (the one that lost it signs in with its providers). An add mails nothing
+   * more: its code was the proof. Neither is ever dropped: noticeRoom made sure the lane has room for
+   * them before the change applied, and a full cap of the account's notices counts them but does not
+   * stop them (else five notices first would switch off the undo).
    */
   private appliedMail(a: EmailApplied, undoToken: string, keys: { me: string; from: string | null }, providers: readonly Provider[], requestLang: unknown, now: number): MailOrder[] {
     const out: MailOrder[] = [];
@@ -1037,18 +1040,33 @@ export class AccountsDO extends DurableObject<Env> {
     if (me === null) return out;
     // A change (a move of an account that had an address too): M6 to the old address, with the undo.
     if (a.old !== null) {
-      const order = this.notice({ ...me, email: a.old.email }, keys.me, { kind: 'email_changed', name: me.name, masked: maskEmail(a.email), at: now, token: undoToken, providers }, requestLang, now);
+      const order = this.notice({ ...me, email: a.old.email }, keys.me, { kind: 'email_changed', name: me.name, masked: maskEmail(a.email), at: now, token: undoToken, providers }, requestLang, now, true);
       if (order !== null) out.push(order);
     }
-    if (a.kind === 'move' && a.from !== null && keys.from !== null) {
+    if (a.kind === 'move' && a.from !== null) {
       const from = this.store.mailProfile(a.from);
       const source = this.store.moveSource(a.from);
       if (from !== null) {
-        const order = this.notice({ ...from, email: a.email }, keys.from, { kind: 'email_moved', name: from.name, other: me.name, at: now, methods: source?.ways ?? [] }, requestLang, now);
+        const order = this.notice({ ...from, email: a.email }, keys.from, { kind: 'email_moved', name: from.name, other: me.name, at: now, methods: source?.ways ?? [] }, requestLang, now, true);
         if (order !== null) out.push(order);
       }
     }
     return out;
+  }
+
+  /**
+   * Before an add, a change or a move applies (§2.6, in the handler's one step): the notices it must
+   * send (M6 for a change, M12 for a move) can go. Mail off (the kill flag, a deploy that cannot
+   * deliver: `mailOff`, the Worker's mailRefusal) answers 503 email_paused, a day's notice lane
+   * without room for them its 429 until tomorrow; nothing changes and the code or link stays live. An
+   * add sends nothing after its code, so it always may.
+   */
+  private noticeRoom(userId: string, row: MailTokenRow, mailOff: boolean, now: number): Response | null {
+    const owner = this.store.emailOwner(userId);
+    const need = (owner !== null && owner.canon !== null ? 1 : 0) + (typeof row.payload.moveFrom === 'string' ? 1 : 0);
+    if (need === 0) return null;
+    if (mailOff) return error(503, 'email_paused', 'Ahora no podemos enviar correos. Inténtalo en unos minutos.');
+    return this.laneRefusal('notice', now, need);
   }
 
   /** The providers this deployment signs in with, as a request names them (M6's {providers}). */
@@ -1065,11 +1083,11 @@ export class AccountsDO extends DurableObject<Env> {
   }
 
   /**
-   * POST /me-email-verify { userId, attempt, code, keep?, providers?, lang? } -> MeInfo & { mail } (§2.6):
-   * the code of the account's own attempt (5 tries, the address's failed codes counted apart from a
-   * sign-up's), then the add, the change or the move in one transaction (applyEmail). 400 code_wrong
-   * { triesLeft }, 410 code_expired, 409 email_taken (a race) / move_refused (the other account lost
-   * its other way in meanwhile).
+   * POST /me-email-verify { userId, attempt, code, keep?, providers?, lang?, mailOff? } -> MeInfo & { mail }
+   * (§2.6): the code of the account's own attempt (5 tries, the address's failed codes counted apart
+   * from a sign-up's), then the add, the change or the move in one transaction (applyEmail), once its
+   * notices can go (noticeRoom). 400 code_wrong { triesLeft }, 410 code_expired, 409 email_taken (a
+   * race) / move_refused (the other account lost its other way in meanwhile), 429 / 503 (noticeRoom).
    */
   private async meEmailVerify(b: Record<string, unknown>, now: number): Promise<Response> {
     if (typeof b.userId !== 'string' || typeof b.attempt !== 'string' || !B64_43.test(b.attempt) || typeof b.code !== 'string' || !CODE_RE.test(b.code)) return error(400, 'bad_request');
@@ -1081,6 +1099,8 @@ export class AccountsDO extends DurableObject<Env> {
     const v = await this.codeCheck(first.purpose, b.attempt, b.code, b.userId, now);
     // ---- one step from here (codeCheck's own, then the transaction) ----
     if (v instanceof Response) return v;
+    const room = this.noticeRoom(b.userId, v.row, b.mailOff === true, now);
+    if (room !== null) return room;
     const r = this.store.applyEmail(v.row.hash, isHex(b.keep, 64) ? b.keep : null, undo, now);
     if (typeof r === 'string') return this.appliedRefusal(r, false);
     const mail = this.appliedMail(r, undo.token, keys, this.providersOf(b.providers), b.lang, now);
@@ -1088,9 +1108,10 @@ export class AccountsDO extends DurableObject<Env> {
   }
 
   /**
-   * POST /email-confirm { token, keep?, providers?, lang? } -> { ok, name, email, mail } (§2.6): the
-   * mailed link of an add or a change (M5), opened on any device: no session needed, the link is the
-   * mailbox's proof and the row names its account. 410 link_invalid; 409 email_taken / move_refused.
+   * POST /email-confirm { token, keep?, providers?, lang?, mailOff? } -> { ok, name, email, mail } (§2.6):
+   * the mailed link of an add or a change (M5), opened on any device: no session needed, the link is
+   * the mailbox's proof and the row names its account. 410 link_invalid; 409 email_taken /
+   * move_refused; 429 / 503 (noticeRoom).
    */
   private async emailConfirm(b: Record<string, unknown>, now: number): Promise<Response> {
     if (typeof b.token !== 'string' || !B64_43.test(b.token)) return linkInvalid();
@@ -1100,6 +1121,10 @@ export class AccountsDO extends DurableObject<Env> {
     const moveFrom = typeof first.payload.moveFrom === 'string' ? first.payload.moveFrom : null;
     const keys = { me: await this.noticeKey(first.userId), from: moveFrom !== null ? await this.noticeKey(moveFrom) : null };
     // ---- one step from here ----
+    const row = this.store.mailToken('hash', first.hash);
+    if (row === null || row.usedAt > 0 || now >= row.expiresAt) return linkInvalid();
+    const room = this.noticeRoom(first.userId, row, b.mailOff === true, now);
+    if (room !== null) return room;
     const r = this.store.applyEmail(first.hash, isHex(b.keep, 64) ? b.keep : null, undo, now);
     if (typeof r === 'string') return this.appliedRefusal(r, true);
     return json({ ok: true, name: r.name, email: r.email, mail: this.appliedMail(r, undo.token, keys, this.providersOf(b.providers), b.lang, now) });
@@ -1144,15 +1169,19 @@ export class AccountsDO extends DurableObject<Env> {
   /**
    * A security notice about something that already happened (M4 and the others: the notice lane,
    * both languages), within the account's own cap of notices a day and the lane's share; null when
-   * either is full (the change stands, the notice is skipped) or the account has no address.
+   * either is full (the change stands, the notice is skipped) or the account has no address. `must`
+   * (M6 and M12, whose change applied only once noticeRoom saw room for them in the lane): never
+   * skipped, and counted in the account's cap while it has room.
    */
   private async noticeKey(userId: string): Promise<string> {
     return this.throttleKey('nt', userId);
   }
 
-  private notice(p: MailProfile | null, key: string, data: MailOrder['data'], requestLang: unknown, now: number): MailOrder | null {
+  private notice(p: MailProfile | null, key: string | null, data: MailOrder['data'], requestLang: unknown, now: number, must = false): MailOrder | null {
     if (p === null || p.email === null) return null;
-    if (this.laneRefusal('notice', now) !== null || this.takeCaps([{ key, cap: MAIL_CAPS.notice, code: 'email_rate_limited' }], now) !== null) return null;
+    if (must) {
+      if (key !== null) this.takeCaps([{ key, cap: MAIL_CAPS.notice, code: 'email_rate_limited' }], now);
+    } else if (key === null || this.laneRefusal('notice', now) !== null || this.takeCaps([{ key, cap: MAIL_CAPS.notice, code: 'email_rate_limited' }], now) !== null) return null;
     this.store.mailDayCount(mailDay(now), 'notice', 'sent');
     return { to: p.email, lang: mailLang(p.lang, typeof requestLang === 'string' ? requestLang : null), ...(p.tz ? { tz: p.tz } : {}), data };
   }

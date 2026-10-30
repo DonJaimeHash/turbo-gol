@@ -60,6 +60,8 @@ todavía no lo confirmaste.
    - tu correo anterior recibe un aviso con un enlace para deshacer el cambio durante 7 días;
    - ese correo queda reservado para tu cuenta esos 7 días;
    - se cierra la sesión en tus otros dispositivos.
+
+   Si ese día no podemos enviar el aviso, el correo no cambia: inténtalo más tarde.
 4. **Si no fuiste tú:** abre el enlace del aviso. Tu cuenta vuelve al correo anterior, eliges una
    contraseña nueva, se cierra la sesión en todos los dispositivos y se desvinculan Google o Discord
    si se vincularon en esos 7 días. Después el correo no se puede cambiar por 7 días. Si alguien lo
