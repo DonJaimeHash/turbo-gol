@@ -59,6 +59,13 @@ export interface Env {
   REGION_OVERRIDE: string;
   /** Secret. Signs sessions, tickets and the internal Worker <-> DO header. */
   JWT_SECRET: string;
+  /**
+   * Secret, optional: the password pepper (accountRoutes.ts serverHash), 32 random bytes as text
+   * (`openssl rand -hex 32`), at least 32 characters. Set once and never rotated or removed: every
+   * current-key password stored after it (users.pw_kid 'p1') checks only with it. Unset (a fork, dev, tests):
+   * no pepper (pw_kid ''), and each such password is re-hashed with it at its next sign-in.
+   */
+  PASSWORD_PEPPER?: string;
   /** Secret, optional: when set, POST /api/guest requires a valid Turnstile token. */
   TURNSTILE_SECRET?: string;
   /**
@@ -116,6 +123,13 @@ export interface Env {
   NODE_ALERT_WEBHOOK?: string;
   /** Var: the public origin the nodes and the installers reach the control plane at (https://turbo-gol.com). */
   NODES_PUBLIC_BASE?: string;
+  /**
+   * Var and secret, optional: the zone id and an API token with only "Cache Purge" on it. With both,
+   * a maintainer's replay delist (nodeRoutes.ts) also purges the view's copies in every Cloudflare
+   * location; without them only the location the maintainer reaches, the others in 3 hours.
+   */
+  CF_ZONE_ID?: string;
+  CF_PURGE_TOKEN?: string;
   /**
    * Workers Rate Limiting bindings (wrangler.jsonc `ratelimits`), named after their limit per 60 s:
    * the counters behind limits.ts's table, shared by the isolates of one Cloudflare location.

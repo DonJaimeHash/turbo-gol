@@ -1,8 +1,9 @@
 // Security 3, the browser's side (src/net/AccountClient.ts on a fake fetch): a refresh another tab
 // won is asked again, not taken for a sign-out; the device list and sign out everywhere; the TV's
 // limited scope as the session says it; the TV code typed (never confirmed from the link); linking,
-// a first password and new codes behind a fresh sign-in; the login's anti-bot step when the server
-// slows a username down. The server's side: server/test/takeover.test.mjs.
+// a first password and new codes behind a fresh sign-in; and from sign-in PR 4 the anti-bot token
+// of every sign-in, both keys of a password, and "confirm it's you" at the level the server names.
+// The server's side: server/test/takeover.test.mjs and server/test/levels.test.mjs.
 //   node --test tests/account-security.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -137,9 +138,10 @@ test('auth-1 / client-1: the /tv page never confirms the link\'s code in one tap
 
 test('auth-2: PERFIL links only right after a sign-in (fresh), else it asks "confirm it is you"; a TV never is fresh', async () => {
   let now = 1_800_000_000_000;
-  const { acc } = client({ '/api/auth/refresh': () => res(200, SESSION({ authAt: now - 60_000 })) }, { now: () => now });
+  const { acc } = client({ '/api/auth/refresh': () => res(200, SESSION({ authAt: now - 60_000, authLvl: 1 })) }, { now: () => now });
   await acc.restore();
   assert.equal(acc.fresh(), true, 'signed in a minute ago');
+  assert.equal(acc.fresh(2), false, 'with a provider (level 1): not enough for a level-2 change');
   now += 9 * 60_000;
   assert.equal(acc.fresh(), false, 'nine minutes later: confirm first');
   acc.signInWith({ ...SESSION({ tv: true, authAt: now }) });
@@ -154,7 +156,7 @@ test('auth-2: PERFIL links only right after a sign-in (fresh), else it asks "con
 test('authz-1: a password re-authentication sends the client key with the Bearer and adopts the fresh session; unlink asks the server and reloads the profile', async () => {
   const { acc, calls } = client({
     '/api/auth/refresh': () => res(200, SESSION()),
-    '/api/auth/reauth': (body) => (body.password.length === 64 ? res(200, SESSION({ session: 'jwt-fresh', authAt: Date.now() })) : res(400, {})),
+    '/api/auth/reauth': (body) => (body.password.length === 64 ? res(200, SESSION({ session: 'jwt-fresh', authAt: Date.now(), authLvl: 2 })) : res(400, {})),
     '/api/auth/unlink': () => res(200, { ok: true }),
     '/api/me': () => res(200, { playerId: 'abcdef0123456789', name: 'Ana', providers: ['discord'], hasPassword: false, linkedAt: { discord: 5 } }),
   });
@@ -162,9 +164,11 @@ test('authz-1: a password re-authentication sends the client key with the Bearer
   await acc.reauth('una contraseña');
   const r = calls.find((c) => c.path === '/api/auth/reauth');
   assert.match(r.body.password, /^[0-9a-f]{64}$/, 'never the typed password');
+  assert.match(r.body.legacy, /^[0-9a-f]{64}$/, 'and the legacy key, which re-keys a password of before');
   assert.equal(r.headers.authorization, 'Bearer jwt-ana');
   assert.equal(acc.account.session, 'jwt-fresh');
   assert.equal(acc.fresh(), true);
+  assert.equal(acc.fresh(2), true, 'a typed password is level 2');
   await acc.unlink('google');
   assert.deepEqual(calls.find((c) => c.path === '/api/auth/unlink').body, { provider: 'google' });
   assert.deepEqual(acc.me.linkedAt, { discord: 5 });
@@ -183,35 +187,87 @@ test('auth-3: PERFIL sends a first password, new codes without a password, a lin
   assert.match(src, /await acc\.reauth\(pass\.input\.value\)/, 'or the password');
 });
 
-// ---- auth-5: a username under attack asks the sign-in for the anti-bot check ---------------------
+// ---- auth-5 / sign-in PR 4: every anonymous sign-in carries a solved anti-bot check ----------------
 
-test('auth-5: a sign-in the server slows down (403 turnstile_required) is sent once more with a solved token; other refusals are not retried', async () => {
+test('auth-5 (sign-in PR 4): login and recover send a solved anti-bot token every time; a token that died (403 turnstile_failed) is replaced once, silently; other refusals are not retried', async () => {
   let tokens = 0;
   const { acc, calls } = client(
-    { '/api/auth/login': (body) => (body.turnstileToken === 'tok' ? res(200, SESSION()) : res(403, { error: 'turnstile_required' })) },
-    { antiBot: async () => (tokens++, 'tok') },
+    { '/api/auth/login': (body) => (body.turnstileToken === 'tok-2' ? res(200, SESSION()) : res(403, { error: 'turnstile_failed' })) },
+    { antiBot: async () => 'tok-' + ++tokens },
   );
   const s = await acc.login('Ana', 'una contraseña');
   assert.equal(s.name, 'Ana');
-  assert.equal(tokens, 1);
-  assert.equal(calls.length, 2);
-  assert.equal(calls[1].body.turnstileToken, 'tok');
+  assert.deepEqual(calls.map((c) => c.body.turnstileToken), ['tok-1', 'tok-2'], 'one token per request, a new one for the retry');
   const { acc: banned, calls: c2 } = client({ '/api/auth/login': () => res(403, { error: 'banned' }) }, { antiBot: async () => 'tok' });
   await assert.rejects(banned.login('Ana', 'una contraseña'), (e) => e.code === 'banned');
   assert.equal(c2.length, 1);
+  const { acc: twice, calls: c3 } = client({ '/api/auth/login': () => res(403, { error: 'turnstile_failed' }) }, { antiBot: async () => 'tok' });
+  await assert.rejects(twice.login('Ana', 'una contraseña'), (e) => e.code === 'turnstile_failed' && !/^error\./.test(e.message));
+  assert.equal(c3.length, 2, 'once more, never a loop');
+  const { acc: rec, calls: c4 } = client({ '/api/auth/recover': () => res(200, { ...SESSION(), codesLeft: 7 }) }, { antiBot: async () => 'tok-r' });
+  await rec.recover('Ana', 'AAAA-BBBB', 'una contraseña nueva');
+  assert.equal(c4[0].body.turnstileToken, 'tok-r');
+  const { acc: broken } = client({}, { antiBot: async () => Promise.reject(new Error('widget')) });
+  await assert.rejects(broken.login('Ana', 'una contraseña'), (e) => e.code === 'turnstile_failed');
 });
 
-test('auth-5 (review): a sign-in refused for the day (the daily cap of new browsers) keeps its wait, and PERFIL says what to do instead of counting seconds', async () => {
-  const DAY = 24 * 60 * 60_000;
-  const { acc } = client({ '/api/auth/login': () => res(429, { error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: DAY - 1000 }) });
-  await assert.rejects(acc.login('Ana', 'una contraseña'), (e) => e.code === 'throttled' && e.retryAfterMs === DAY - 1000);
+test('auth-5 (sign-in PR 4): a username paused for new browsers (30 minutes to an hour) keeps its wait, and PERFIL says what to do in minutes instead of counting seconds', async () => {
+  const WAIT = 30 * 60_000 - 1000;
+  const { acc } = client({ '/api/auth/login': () => res(429, { error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: WAIT }) });
+  const e = await acc.login('Ana', 'una contraseña').then(() => null, (err) => err);
+  assert.ok(e.code === 'throttled' && e.retryAfterMs === WAIT);
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
-  assert.match(src, /const DAILY_CAP_MS = 15 \* 60_000;/, 'longer than any lock of a sign-in');
-  assert.match(src, /e\.code === 'throttled' && e\.retryAfterMs > DAILY_CAP_MS\) return t\('profile\.retryTomorrow'\)/);
+  assert.match(src, /const PAIR_LOCK_MAX_MS = 15 \* 60_000;/, 'the longest lock of a pair and a network pause');
+  assert.match(src, /e\.code === 'throttled' && e\.retryAfterMs > PAIR_LOCK_MAX_MS\) return t\('profile\.retryNewDevice', \{ minutes: Math\.ceil\(e\.retryAfterMs \/ 60_000\) \}\)/);
   const es = (await import('../src/locales/es.ts')).default;
   const en = (await import('../src/locales/en.ts')).default;
-  assert.match(es['profile.retryTomorrow'], /dispositivo que ya usaste/);
-  assert.doesNotMatch(es['profile.retryTomorrow'], /\b(usaste vos|probá|entrá|intentá)\b/, 'neutral tú, no voseo');
-  assert.match(en['profile.retryTomorrow'], /device you have used before/);
+  assert.match(es['profile.retryNewDevice'], /dispositivo que ya usaste.*\{minutes\} min/);
+  assert.doesNotMatch(es['profile.retryNewDevice'], /\b(usaste vos|probá|entrá|intentá|esperá)\b/, 'neutral tú, no voseo');
+  assert.match(en['profile.retryNewDevice'], /device you have used before.*\{minutes\} min/);
+  assert.equal(es['profile.retryTomorrow'], undefined, 'no pause lasts until tomorrow any more');
+});
+
+test('sign-in PR 4: login sends both keys of the typed password (the legacy one re-keys it), sign-up and recovery the current key only, every proof both; a session of before levels is never fresh', async () => {
+  const ACC = await import('../src/net/account.ts');
+  const { acc, calls } = client({
+    '/api/auth/login': () => res(200, SESSION({ authAt: Date.now() })),
+    '/api/auth/register': () => res(200, { ...SESSION(), recoveryCodes: [] }),
+    '/api/auth/password': () => res(200, { ok: true }),
+    '/api/auth/recovery-codes': () => res(200, { recoveryCodes: [] }),
+    '/api/me/username': () => res(200, SESSION({ name: 'Ana2' })),
+    '/api/me': () => res(200, { playerId: 'abcdef0123456789', name: 'Ana2', providers: ['password'], hasPassword: true }),
+  });
+  await acc.login(' Ana ', 'una contraseña');
+  const [legacy, current] = [await ACC.legacyPasswordKey('Ana', 'una contraseña'), await ACC.passwordKey('una contraseña')];
+  assert.deepEqual(calls[0].body, { username: 'Ana', password: legacy, passwordV2: current });
+  assert.notEqual(legacy, current);
+  assert.equal(await ACC.passwordKey('una contraseña'), await ACC.passwordKey('una contraseña'.normalize('NFD')), 'NFKC first');
+  assert.equal(acc.fresh(), false, 'an authAt without a level (a session of before levels) is level 0');
+  await acc.register('Beto', 'otra clave larga');
+  assert.deepEqual(calls.at(-1).body, { username: 'Beto', passwordV2: await ACC.passwordKey('otra clave larga') });
+  await acc.changePassword('una contraseña', 'otra clave larga');
+  assert.deepEqual(calls.at(-1).body, { passwordV2: await ACC.passwordKey('otra clave larga'), oldPassword: await ACC.legacyPasswordKey(acc.account.name, 'una contraseña'), oldPasswordV2: current });
+  await acc.newRecoveryCodes('una contraseña');
+  assert.deepEqual(Object.keys(calls.at(-1).body).sort(), ['password', 'passwordV2']);
+  await acc.rename('Ana2', 'una contraseña');
+  assert.deepEqual(Object.keys(calls.find((c) => c.path === '/api/me/username').body).sort(), ['password', 'passwordV2', 'username'], 'no new-name key: the current key has no name in it');
+  for (const c of calls) for (const v of Object.values(c.body ?? {})) assert.notEqual(v, 'una contraseña', 'never the typed password');
+});
+
+test('sign-in PR 4: "confirm it\'s you" asks for the level the server names; at level 2 PERFIL offers the password only and says a provider is not enough; an unlink asked for level 2 confirms again', async () => {
+  const { acc } = client({ '/api/auth/unlink': () => res(403, { error: 'reauth_required', message: 'Confirma que eres tú: vuelve a entrar con tu cuenta', level: 2 }) });
+  acc.signInWith(SESSION({ authAt: Date.now(), authLvl: 1 }));
+  const e = await acc.unlink('discord').then(() => null, (err) => err);
+  assert.equal(e.code, 'reauth_required');
+  assert.equal(e.level, 2, 'the level comes with the refusal');
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
+  assert.match(src, /const fresh = \(go: \(\) => void, level: 1 \| 2 = 1\): void => \{\s*if \(acc\.fresh\(level\)\)/, 'the sheet is for a level');
+  assert.match(src, /const offered = level === 1 \? own : \[\];/, 'no provider at level 2');
+  assert.match(src, /e\.code === 'reauth_required' && e\.level > level \? unlinkNow\(p, 2\)/, 'an unlink asked for level 2 asks again, once');
+  const es = (await import('../src/locales/es.ts')).default;
+  const en = (await import('../src/locales/en.ts')).default;
+  assert.equal(es['profile.reauthPasswordOnly'], 'Para esto no alcanza con {providers}: usa tu contraseña.');
+  assert.equal(en['profile.reauthPasswordOnly'], "{providers} isn't enough for this: use your password.");
 });

@@ -38,6 +38,7 @@ import { finePointer } from '../device';
 import { icon } from '../components/icons';
 import type { IconName } from '../components/icons';
 import { slot } from '../components/tile';
+import { setRow, toggleSwitch } from '../components/rows';
 import { language, t } from '../../i18n';
 import type { Key } from '../../i18n';
 import { DISCORD_URL, GAME_NAME, SOURCE_URL } from '../../brand';
@@ -71,17 +72,36 @@ function loopbackPage(): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
 }
 
-/** Longer than any lock of a sign-in (AccountsDO LOGIN_LOCK_MAX_MS): only the daily cap of an account's failures from new browsers. */
-const DAILY_CAP_MS = 15 * 60_000;
+/**
+ * The longest lock of a (username, network) pair and the pause of a network (AccountsDO
+ * LOGIN_LOCK_MAX_MS, LOGIN_NET_PAUSE_MS): a longer wait is the pause of a username's failures from
+ * new browsers (30 minutes to an hour), which a browser that signed in there before skips.
+ */
+const PAIR_LOCK_MAX_MS = 15 * 60_000;
 
-/** An account error in the player's words (a throttle with its seconds; the daily cap of new browsers says what to do). */
+/** An account error in the player's words (a throttle with its seconds; a username's pause says what to do). */
 export function errText(e: unknown): string {
   if (e instanceof AccountError) {
-    if (e.code === 'throttled' && e.retryAfterMs > DAILY_CAP_MS) return t('profile.retryTomorrow');
+    if (e.code === 'throttled' && e.retryAfterMs > PAIR_LOCK_MAX_MS) return t('profile.retryNewDevice', { minutes: Math.ceil(e.retryAfterMs / 60_000) });
     if (e.code === 'throttled' && e.retryAfterMs > 0) return t('profile.retryAfter', { message: e.message, seconds: Math.ceil(e.retryAfterMs / 1000) });
     return e.message;
   }
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * A form's button while its request runs (two key derivations and an anti-bot check can take a
+ * second on a phone): a second press is ignored and aria-busy says so. Not `disabled`, which would
+ * drop the focus a remote or a pad stands on.
+ */
+async function busyWhile(btn: HTMLElement, fn: () => Promise<void>): Promise<void> {
+  if (btn.getAttribute('aria-busy') === 'true') return;
+  btn.setAttribute('aria-busy', 'true');
+  try {
+    await fn();
+  } finally {
+    btn.removeAttribute('aria-busy');
+  }
 }
 
 /** What is wrong with a username or password (src/net/account.ts), in the player's language; null when nothing. */
@@ -158,6 +178,9 @@ export function profileScreen(menu: Menu): Screen {
   let tab: GuestTab = 'login';
   /** The signed-in account's community nodes (GET /nodes/mine), by account. */
   let nodes: { who: string; list: MyNode[] } | null = null;
+  /** PRIVACIDAD's switch (GET /api/me/replay-name), by account: null until it is read; the switch on screen. */
+  let replayHidden: { who: string; hidden: boolean } | null = null;
+  let replaySwitch: { refresh(): void } | null = null;
   /** CUENTA Y SEGURIDAD unfolded. */
   let accountOpen = false;
   let sample: AccountData | null = null;
@@ -187,9 +210,10 @@ export function profileScreen(menu: Menu): Screen {
         pass.error(errText(e));
       }
     };
-    onEnter([user.input, pass.input], () => void go());
+    const btn = primary(t('profile.signIn'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
+    onEnter([user.input, pass.input], () => void busyWhile(btn, go));
     const forgot = navButton('mn-link mn-prof-forgot', t('profile.forgot'), () => pickTab('recover'), { 'data-key': 'profile-forgot' });
-    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, user.el, pass.el, primary(t('profile.signIn'), () => void go(), { 'data-key': 'profile-go' }), forgot, oauthButtons());
+    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, user.el, pass.el, btn, forgot, oauthButtons());
   };
 
   const registerForm = (): HTMLElement => {
@@ -225,8 +249,9 @@ export function profileScreen(menu: Menu): Screen {
         else pass.error(errText(e));
       }
     };
-    onEnter([user.input, pass.input, pass2.input], () => void go());
-    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, user.el, pass.el, pass2.el, primary(t('profile.createAccount'), () => void go(), { 'data-key': 'profile-go' }), oauthButtons());
+    const btn = primary(t('profile.createAccount'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
+    onEnter([user.input, pass.input, pass2.input], () => void busyWhile(btn, go));
+    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, user.el, pass.el, pass2.el, btn, oauthButtons());
   };
 
   const recoverForm = (): HTMLElement => {
@@ -249,8 +274,9 @@ export function profileScreen(menu: Menu): Screen {
         pass.error(errText(e));
       }
     };
-    onEnter([user.input, code.input, pass.input], () => void go());
-    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, h('p.mn-prof-form-title', null, t('profile.tabRecover')), user.el, code.el, pass.el, primary(t('profile.resetPassword'), () => void go(), { 'data-key': 'profile-go' }));
+    const btn = primary(t('profile.resetPassword'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
+    onEnter([user.input, code.input, pass.input], () => void busyWhile(btn, go));
+    return h('form.mn-form', { onsubmit: (e: Event) => e.preventDefault() }, h('p.mn-prof-form-title', null, t('profile.tabRecover')), user.el, code.el, pass.el, btn);
   };
 
   /**
@@ -444,6 +470,32 @@ export function profileScreen(menu: Menu): Screen {
       icon('next', 'mn-prof-fold-chev'),
     );
     const server = v.nodes.length > 0 ? section(t('profile.myServer'), h('div.mn-prof-nodes', null, ...v.nodes.map(nodeView))) : null;
+    // PRIVACIDAD: the public replays show 'Jugador N' for this account (src/net/replays.ts), the
+    // matches already listed too. Off by default; a TV signed in with the phone may change it too.
+    const who = sample !== null ? 'sample' : (acc.account?.playerId ?? '');
+    const hideSwitch = toggleSwitch(
+      'profile-replay-name',
+      t('profile.hideReplayName'),
+      () => replayHidden !== null && replayHidden.who === who && replayHidden.hidden,
+      (on) => {
+        const was = replayHidden !== null && replayHidden.who === who && replayHidden.hidden;
+        replayHidden = { who, hidden: on };
+        if (sample !== null) return;
+        void acc.setReplayNameHidden(on).then(
+          (hidden) => {
+            if (replayHidden?.who === who) replayHidden = { who, hidden };
+            hideSwitch.refresh();
+          },
+          (e: unknown) => {
+            if (replayHidden?.who === who) replayHidden = { who, hidden: was };
+            hideSwitch.refresh();
+            menu.toast(errText(e), 'error');
+          },
+        );
+      },
+    );
+    replaySwitch = hideSwitch;
+    const privacy = section(t('profile.privacy'), setRow(t('profile.hideReplayName'), hideSwitch.el, t('profile.hideReplayNameHelp')));
     return h(
       'div.mn-prof-account',
       null,
@@ -452,6 +504,7 @@ export function profileScreen(menu: Menu): Screen {
         'div.mn-prof-col',
         null,
         h('section.mn-section.mn-prof-security', null, toggle, fold),
+        privacy,
         section(
           t('profile.community'),
           h('div.mn-prof-links', null, link(DISCORD_URL, 'friends', t('profile.discord'), 'profile-discord'), link(HOST_GUIDE(), 'server', t('profile.hostServer'), 'profile-host'), link(SOURCE_URL, 'code', t('profile.source'), 'profile-source')),
@@ -580,22 +633,26 @@ export function profileScreen(menu: Menu): Screen {
 
 
   /**
-   * Run `go` once this browser proved a credential in the last minutes (AccountClient.fresh): at
-   * once when it did, else after "confirm it is you": a provider already on the account (a round
-   * trip that comes back to PERFIL, then the player taps again) or the password here.
+   * Run `go` once this browser proved a credential at `level` in the last minutes (AccountClient.fresh,
+   * the server's R6): at once when it did, else after "confirm it is you" with what reaches that
+   * level. Level 1: a provider already on the account (a round trip that comes back to PERFIL, then
+   * the player taps again) or the password here. Level 2 (the server's reauth_required { level: 2 }):
+   * the password only, since a press on a provider's page is level 1, and the sheet says so.
    */
-  const fresh = (go: () => void): void => {
-    if (acc.fresh()) {
+  const fresh = (go: () => void, level: 1 | 2 = 1): void => {
+    if (acc.fresh(level)) {
       go();
       return;
     }
     const me = acc.me;
     const own = (me?.providers ?? []).filter((p): p is OAuthProvider => p !== 'password' && ((menu.cfg?.oauth ?? []) as string[]).includes(p));
+    const offered = level === 1 ? own : [];
     const pass = field(t('profile.yourPassword'), { type: 'password', autocomplete: 'current-password' });
     const withPassword = me?.hasPassword === true;
+    const notEnough = level === 2 && own.length > 0 ? h('p.mn-note', null, t('profile.reauthPasswordOnly', { providers: own.map((p) => PROVIDER_NAMES[p]).join(` ${t('profile.or')} `) })) : null;
     menu.modal({
       title: t('profile.reauthTitle'),
-      body: [h('p.mn-note', null, t('profile.reauthNote')), ...own.map((p) => secondary(t('profile.reauthWith', { provider: PROVIDER_NAMES[p] }), () => (window.location.href = acc.oauthUrl(p, 'reauth')), { 'data-key': 'profile-reauth-' + p })), withPassword ? pass.el : null],
+      body: [h('p.mn-note', null, t('profile.reauthNote')), notEnough, ...offered.map((p) => secondary(t('profile.reauthWith', { provider: PROVIDER_NAMES[p] }), () => (window.location.href = acc.oauthUrl(p, 'reauth')), { 'data-key': 'profile-reauth-' + p })), withPassword ? pass.el : null],
       actions: [
         ...(withPassword
           ? [
@@ -621,6 +678,21 @@ export function profileScreen(menu: Menu): Screen {
     });
   };
 
+  /**
+   * Take `p` off the account after "confirm it is you" at `level`: 1 first, and 2 when the server
+   * says only one way in would be left (403 reauth_required { level: 2 }), once.
+   */
+  const unlinkNow = (p: OAuthProvider, level: 1 | 2 = 1): void =>
+    fresh(() => {
+      void acc.unlink(p).then(
+        () => {
+          menu.toast(t('profile.unlinked', { provider: PROVIDER_NAMES[p] }), 'ok');
+          render();
+        },
+        (e: unknown) => (e instanceof AccountError && e.code === 'reauth_required' && e.level > level ? unlinkNow(p, 2) : menu.toast(errText(e), 'error')),
+      );
+    }, level);
+
   /** DESVINCULAR: one provider off the account (never the last way in), after "confirm it is you". */
   const unlinkDialog = (p: OAuthProvider): void => {
     menu.modal({
@@ -631,17 +703,7 @@ export function profileScreen(menu: Menu): Screen {
           label: t('profile.unlinkConfirm'),
           danger: true,
           onClick: () => {
-            queueMicrotask(() =>
-              fresh(() => {
-                void acc.unlink(p).then(
-                  () => {
-                    menu.toast(t('profile.unlinked', { provider: PROVIDER_NAMES[p] }), 'ok');
-                    render();
-                  },
-                  (e: unknown) => menu.toast(errText(e), 'error'),
-                );
-              }),
-            );
+            queueMicrotask(() => unlinkNow(p));
             return true;
           },
         },
@@ -740,6 +802,19 @@ export function profileScreen(menu: Menu): Screen {
     );
   };
 
+  /** PRIVACIDAD's switch as the server has it, once per visit (offline: it reads NO until the next one). */
+  const loadReplayName = (): void => {
+    const who = acc.account?.playerId ?? null;
+    if (who === null) return;
+    void acc.replayNameHidden().then(
+      (hidden) => {
+        replayHidden = { who, hidden };
+        replaySwitch?.refresh();
+      },
+      () => undefined,
+    );
+  };
+
   // The samples exist in development and in a VITE_UI_FIT=1 build only (read here: node tests import this module).
   if (import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1') {
     (window as unknown as { __profile: (kind: 'account' | 'operator' | null) => void }).__profile = (kind) => {
@@ -761,7 +836,10 @@ export function profileScreen(menu: Menu): Screen {
     const signedIn = who !== shownFor && who !== null;
     if (el.isConnected) {
       render();
-      if (signedIn) loadNodes();
+      if (signedIn) {
+        loadNodes();
+        loadReplayName();
+      }
     }
   });
   return {
@@ -773,6 +851,7 @@ export function profileScreen(menu: Menu): Screen {
       if (acc.signedIn) {
         void acc.fetchMe().then(render, () => undefined);
         loadNodes();
+        loadReplayName();
       }
     },
   };

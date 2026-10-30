@@ -31,6 +31,9 @@
  *   experimental     user -> Settings > Experimental's switch (src/game/experimentalStore.ts)
  *   presets          (user, preset) -> one physics preset: its name and canonical values as JSON
  *                    (src/game/physicsRules.ts), MAX_PRESETS per account, last write wins
+ *   replay_names     user -> PERFIL's "hide my name in public replays" (src/net/replays.ts): no row is
+ *                    the default, the name shown; the NodeRegistryDO asks (/replay-hidden) when it
+ *                    serves a replay row, so the choice reaches the matches listed before it too
  *
  * The hosts' shop (nodes/control-plane/shop.ts: its catalog and its claim rule, one source with the
  * reference server; nodes/docs/RECOMPENSAS.md: points come only from hosting a community node, are
@@ -108,8 +111,10 @@ const RANKED_KEEP_MS = 30 * 24 * 60 * 60_000;
 export const LEADERBOARD_MAX = 100;
 /** meta.schema_version this build migrates to (migrateTo2); absent = 1, main before the sign-in work. */
 export const SCHEMA_VERSION = 2;
-/** users.pw_v of a password hashed from today's client key (account.ts clientPasswordKey, salted with the username). */
+/** users.pw_v of a password hashed from the legacy client key (account.ts legacyPasswordKey, salted with the username). */
 export const PW_V_LEGACY = 1;
+/** users.pw_v of a password hashed from the current client key (account.ts passwordKey: one fixed salt, no username). */
+export const PW_V_CURRENT = 2;
 const DAY_MS = 24 * 60 * 60_000;
 /** The daily prune keeps a used or expired mail token this long past its expiry. */
 export const MAIL_TOKEN_KEEP_MS = DAY_MS;
@@ -127,12 +132,48 @@ export interface PasswordRecord {
   hash: string;
   salt: string;
   iter: number;
+  /** Which client key it hashes (users.pw_v): 1 the legacy one (absent: 1, a record from before), 2 the current one. */
+  v?: 1 | 2;
+  /** The pepper of the server stage (users.pw_kid): '' none (absent: ''), 'p1' the first PASSWORD_PEPPER. */
+  kid?: string;
 }
 
 export interface Credentials extends Partial<PasswordRecord> {
   userId: string;
   username: string;
   banned: boolean;
+  /** users.pw_v: 0 no password, 1 the legacy key, 2 the current key. */
+  pwV: number;
+  /** The account has a verified address: it signs in by email, never by the legacy username path. */
+  emailVerified: boolean;
+}
+
+/** A family's primary method (refresh.method): how its device signed in. '' for a row from before it was kept. */
+export type SignInMethod = 'password' | 'legacy' | 'google' | 'discord' | 'tv' | 'dev' | 'reset' | '';
+
+/**
+ * A credential event (the sign-in design's R6): its level, which the session signs as `aal`, and
+ * the method. 2 a typed password or a recovery; 1 a press on the provider's own page; 0 nothing
+ * proved (a TV, a silent provider sign-in). A refresh keeps the family's level and never raises it.
+ */
+export interface SignInProof {
+  lvl: 0 | 1 | 2;
+  method: SignInMethod;
+}
+
+const NO_PROOF: SignInProof = { lvl: 0, method: '' };
+
+/** A level as stored (refresh.auth_lvl): 0, 1 or 2, anything else 0. */
+function levelOf(v: SqlValue | undefined): 0 | 1 | 2 {
+  const n = num(v);
+  return n === 1 || n === 2 ? n : 0;
+}
+
+/** A failure counter's row (auth_throttle): its count in the window that started at `first`, locked until `lockedUntil`. */
+export interface ThrottleEntry {
+  count: number;
+  first: number;
+  lockedUntil: number;
 }
 
 /** What kind of device a refresh family signs in: a browser, or a TV signed in with the phone (a limited scope). */
@@ -169,6 +210,8 @@ export interface UserRef {
   tv?: boolean;
   /** When the device last proved a credential (ms); absent or 0 = never (a TV, a token from before families). */
   authAt?: number;
+  /** That proof's level (refresh.auth_lvl, SignInProof): absent or 0 = nothing proved. */
+  authLvl?: 0 | 1 | 2;
   /** The car the account drives (equippedCar: one it still owns, else the default): what its session carries. */
   car?: CarId;
   /** When the account was created (ms): its age weighs its minutes on a community node (ledger.ts). */
@@ -265,6 +308,11 @@ function num(v: SqlValue | undefined): number {
 
 function str(v: SqlValue | undefined): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v);
+}
+
+/** users.pw_v of a record to store: 2 only when it says so (a record from before the field is the legacy key). */
+function pwVOf(pw: PasswordRecord): 1 | 2 {
+  return pw.v === PW_V_CURRENT ? PW_V_CURRENT : PW_V_LEGACY;
 }
 
 export function randomId(): string {
@@ -371,6 +419,7 @@ export class AccountStore {
       PRIMARY KEY (user_id, item_id))`);
     s.exec('CREATE TABLE IF NOT EXISTS host_freeze (user_id TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, cleared_at INTEGER NOT NULL DEFAULT 0)');
     s.exec('CREATE TABLE IF NOT EXISTS loadout (user_id TEXT PRIMARY KEY, car TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+    s.exec('CREATE TABLE IF NOT EXISTS replay_names (user_id TEXT PRIMARY KEY, hidden INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
     this.migrateTo2();
   }
 
@@ -481,11 +530,12 @@ export class AccountStore {
       if (this.usernameTaken(username)) return 'taken' as const;
       const id = this.freshId();
       this.sql.exec(
-        'INSERT INTO users (id, username, ukey, pw_hash, pw_salt, pw_iter, pw_v, recovery, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        id, username, usernameKey(username), pw.hash, pw.salt, pw.iter, PW_V_LEGACY, JSON.stringify(recoveryHashes), now, now,
+        'INSERT INTO users (id, username, ukey, pw_hash, pw_salt, pw_iter, pw_v, pw_kid, recovery, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        id, username, usernameKey(username), pw.hash, pw.salt, pw.iter, pwVOf(pw), pw.kid ?? '', JSON.stringify(recoveryHashes), now, now,
       );
-      this.addRefresh(id, refreshHash, now);
-      return { userId: id, username, car: DEFAULT_CAR, createdAt: now, authAt: now };
+      // The password was just typed: the sign-up's device is at level 2.
+      this.addRefresh(id, refreshHash, now, now, now, null, { lvl: 2, method: 'legacy' });
+      return { userId: id, username, car: DEFAULT_CAR, createdAt: now, authAt: now, authLvl: 2 };
     });
   }
 
@@ -498,11 +548,16 @@ export class AccountStore {
   credentials(username: string): Credentials | null {
     const u = this.userByKey(usernameKey(username));
     if (u === null) return null;
-    const out: Credentials = { userId: str(u.id), username: str(u.username), banned: num(u.banned) === 1 };
-    if (u.pw_hash !== null && u.pw_hash !== undefined) {
+    const hasPw = u.pw_hash !== null && u.pw_hash !== undefined;
+    // A hash with pw_v 0 comes only from a build before the column (a rollback): the legacy key (migrateTo2).
+    const pwV = hasPw ? (num(u.pw_v) === PW_V_CURRENT ? PW_V_CURRENT : PW_V_LEGACY) : 0;
+    const out: Credentials = { userId: str(u.id), username: str(u.username), banned: num(u.banned) === 1, pwV, emailVerified: u.email_canon !== null && u.email_canon !== undefined };
+    if (hasPw) {
       out.hash = str(u.pw_hash);
       out.salt = str(u.pw_salt);
       out.iter = num(u.pw_iter);
+      out.v = pwV === PW_V_CURRENT ? 2 : 1;
+      out.kid = str(u.pw_kid);
     }
     return out;
   }
@@ -512,30 +567,38 @@ export class AccountStore {
     return u === null ? null : this.credentials(str(u.username));
   }
 
-  /** A successful sign-in: last_login and a new refresh token (`kind` 'tv': a TV the phone approved, which proved no credential). */
-  signedIn(userId: string, refreshHash: string | RefreshGrant, now: number): UserRef | null {
+  /**
+   * A successful sign-in: last_login and a new refresh token at the level and method of `proof`
+   * (`kind` 'tv': a TV the phone approved, which proved no credential: level 0, method 'tv').
+   * `rekey`: the password the sign-in proved, stored again in the same transaction (a legacy key
+   * re-keyed to the current one, or a record re-hashed with the current pepper).
+   */
+  signedIn(userId: string, refreshHash: string | RefreshGrant, now: number, proof: SignInProof = NO_PROOF, rekey: PasswordRecord | null = null): UserRef | null {
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1) return null;
       this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, userId);
+      if (rekey !== null) this.setPassword(userId, rekey);
       const tv = typeof refreshHash !== 'string' && refreshHash.kind === 'tv';
-      this.addRefresh(userId, refreshHash, now, tv ? 0 : now);
-      return { ...this.refOf(u), ...(tv ? { tv: true } : { authAt: now }) };
+      const p: SignInProof = tv ? { lvl: 0, method: 'tv' } : proof;
+      this.addRefresh(userId, refreshHash, now, tv ? 0 : now, now, null, p);
+      return { ...this.refOf(u), ...(tv ? { tv: true } : { authAt: now, authLvl: p.lvl }) };
     });
   }
 
   /**
    * Store a refresh token. `authAt`: when the device proved a credential (a sign-in: now; a TV:
-   * never); `familyAt` and `prevHash`: a rotation's (the family's start, the token it replaced).
-   * Past REFRESH_PER_USER browsers (TV_REFRESH_PER_USER TVs) the oldest of that kind goes.
+   * never), and `proof` that proof's level and the family's method; `familyAt` and `prevHash`: a
+   * rotation's (the family's start, the token it replaced). Past REFRESH_PER_USER browsers
+   * (TV_REFRESH_PER_USER TVs) the oldest of that kind goes.
    */
-  addRefresh(userId: string, grant: string | RefreshGrant, now: number, authAt: number = now, familyAt: number = now, prevHash: string | null = null): void {
+  addRefresh(userId: string, grant: string | RefreshGrant, now: number, authAt: number = now, familyAt: number = now, prevHash: string | null = null, proof: SignInProof = NO_PROOF): void {
     const g: RefreshGrant = typeof grant === 'string' ? { hash: grant } : grant;
     const kind: SessionKind = g.kind === 'tv' ? 'tv' : 'web';
     const expires = kind === 'tv' ? Math.min(now + REFRESH_TTL_MS, familyAt + TV_FAMILY_MAX_MS) : now + REFRESH_TTL_MS;
     this.sql.exec(
-      'INSERT OR REPLACE INTO refresh (hash, user_id, created_at, expires_at, family, kind, auth_at, family_at, prev_hash, country, city) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      g.hash, userId, now, expires, g.family ?? null, kind, kind === 'tv' ? 0 : authAt, familyAt, prevHash, g.country ?? null, g.city ?? null,
+      'INSERT OR REPLACE INTO refresh (hash, user_id, created_at, expires_at, family, kind, auth_at, family_at, prev_hash, country, city, auth_lvl, method) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      g.hash, userId, now, expires, g.family ?? null, kind, kind === 'tv' ? 0 : authAt, familyAt, prevHash, g.country ?? null, g.city ?? null, kind === 'tv' ? 0 : proof.lvl, kind === 'tv' ? 'tv' : proof.method,
     );
     const rows = this.sql.exec<{ hash: string }>('SELECT hash FROM refresh WHERE user_id = ? AND kind = ? ORDER BY created_at DESC', userId, kind).toArray();
     for (let i = kind === 'tv' ? TV_REFRESH_PER_USER : REFRESH_PER_USER; i < rows.length; i++) this.sql.exec('DELETE FROM refresh WHERE hash = ?', rows[i].hash);
@@ -579,9 +642,11 @@ export class AccountStore {
       const kind: SessionKind = str(r.kind) === 'tv' ? 'tv' : 'web';
       const familyAt = num(r.family_at) > 0 ? num(r.family_at) : num(r.created_at);
       const authAt = num(r.auth_at);
+      // The proof's level and the method go with it: a refresh never raises a level (a row from before levels: 0).
+      const proof: SignInProof = { lvl: authAt > 0 ? levelOf(r.auth_lvl) : 0, method: str(r.method) as SignInMethod };
       const where = { country: r.country === null || r.country === undefined ? null : str(r.country), city: r.city === null || r.city === undefined ? null : str(r.city) };
-      this.addRefresh(str(u.id), { hash: g.hash, family, kind, ...where }, now, authAt, familyAt, oldHash);
-      return { ...this.refOf(u), ...(kind === 'tv' ? { tv: true } : authAt > 0 ? { authAt } : {}) };
+      this.addRefresh(str(u.id), { hash: g.hash, family, kind, ...where }, now, authAt, familyAt, oldHash, proof);
+      return { ...this.refOf(u), ...(kind === 'tv' ? { tv: true } : authAt > 0 ? { authAt, authLvl: proof.lvl } : {}) };
     });
   }
 
@@ -592,7 +657,7 @@ export class AccountStore {
     const u = this.userById(str(r.user_id));
     if (u === null || num(u.banned) === 1) return null;
     const kind: SessionKind = str(r.kind) === 'tv' ? 'tv' : 'web';
-    return { ...this.refOf(u), kind, device: deviceId(r), ...(kind === 'tv' ? { tv: true } : { authAt: num(r.auth_at) }) };
+    return { ...this.refOf(u), kind, device: deviceId(r), ...(kind === 'tv' ? { tv: true } : { authAt: num(r.auth_at), authLvl: num(r.auth_at) > 0 ? levelOf(r.auth_lvl) : 0 }) };
   }
 
   /**
@@ -650,11 +715,18 @@ export class AccountStore {
     return n ? num(n.n) : 0;
   }
 
+  /** Store a password record: its client key's version (pw_v) and its pepper (pw_kid) with it. */
   setPassword(userId: string, pw: PasswordRecord): boolean {
     const u = this.userById(userId);
     if (u === null) return false;
-    this.sql.exec('UPDATE users SET pw_hash = ?, pw_salt = ?, pw_iter = ?, pw_v = ? WHERE id = ?', pw.hash, pw.salt, pw.iter, PW_V_LEGACY, userId);
+    this.sql.exec('UPDATE users SET pw_hash = ?, pw_salt = ?, pw_iter = ?, pw_v = ?, pw_kid = ? WHERE id = ?', pw.hash, pw.salt, pw.iter, pwVOf(pw), pw.kid ?? '', userId);
     return true;
+  }
+
+  /** The account's stored password hash right now (null: none, or no such account): what a check proved must still be it. */
+  passwordHash(userId: string): string | null {
+    const u = this.userById(userId);
+    return u === null || u.pw_hash === null || u.pw_hash === undefined ? null : str(u.pw_hash);
   }
 
   setRecovery(userId: string, hashes: readonly string[]): void {
@@ -667,22 +739,25 @@ export class AccountStore {
   }
 
   /**
-   * Password reset with a recovery code: the code (its hash) is consumed, the password replaced and
-   * every session signed out; a new refresh token for this browser. Null when the user / code do not match.
+   * Password reset with a recovery code (the legacy path): the code (its hash) is consumed, the
+   * password replaced and every session signed out; a new refresh token for this browser, at level
+   * 2. Null when the user / code do not match, and for an account with a verified email, which
+   * resets by email instead (the design's downgrade rule (a)).
    */
   recover(username: string, codeHash: string, pw: PasswordRecord, refreshHash: string | RefreshGrant, now: number): (UserRef & { codesLeft: number }) | null {
     return this.tx(() => {
       const u = this.userByKey(usernameKey(username));
       if (u === null || num(u.banned) === 1) return null;
+      if (u.email_canon !== null && u.email_canon !== undefined) return null;
       const codes = JSON.parse(str(u.recovery) || '[]') as string[];
       const i = codes.indexOf(codeHash);
       if (i < 0) return null;
       codes.splice(i, 1);
       const id = str(u.id);
-      this.sql.exec('UPDATE users SET recovery = ?, pw_hash = ?, pw_salt = ?, pw_iter = ?, pw_v = ?, last_login = ? WHERE id = ?', JSON.stringify(codes), pw.hash, pw.salt, pw.iter, PW_V_LEGACY, now, id);
+      this.sql.exec('UPDATE users SET recovery = ?, pw_hash = ?, pw_salt = ?, pw_iter = ?, pw_v = ?, pw_kid = ?, last_login = ? WHERE id = ?', JSON.stringify(codes), pw.hash, pw.salt, pw.iter, pwVOf(pw), pw.kid ?? '', now, id);
       this.deleteRefreshOf(id);
-      this.addRefresh(id, refreshHash, now);
-      return { ...this.refOf(u), authAt: now, codesLeft: codes.length };
+      this.addRefresh(id, refreshHash, now, now, now, null, { lvl: 2, method: 'reset' });
+      return { ...this.refOf(u), authAt: now, authLvl: 2 as const, codesLeft: codes.length };
     });
   }
 
@@ -690,10 +765,13 @@ export class AccountStore {
    * Sign in (or sign up) with an OAuth identity. `linkTo` = the signed-in account that asked to
    * link it (profile screen). A new account takes `suggested` (made unique with a numeric suffix).
    * A link never replaces the account's own id of that provider ('provider_set': an unlink comes
-   * first) and a suspended account links nothing ('no_user').
+   * first) and a suspended account links nothing ('no_user'). `lvl`: the level of the press on the
+   * provider's page that brought the identity (R6; the Worker knows the prompt it asked for), the
+   * new token's; its method is the provider.
    */
-  oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number): (UserRef & { created: boolean }) | 'already_linked' | 'provider_set' | 'no_user' {
+  oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number, lvl: 0 | 1 | 2 = 0): (UserRef & { created: boolean }) | 'already_linked' | 'provider_set' | 'no_user' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
+    const proof: SignInProof = { lvl, method: provider };
     return this.tx(() => {
       const owner = this.sql.exec(`SELECT id, username, banned, created_at FROM users WHERE ${col} = ?`, providerId).toArray()[0];
       if (linkTo !== null) {
@@ -703,15 +781,15 @@ export class AccountStore {
         const current = me[col];
         if (current !== null && current !== undefined && str(current) !== providerId) return 'provider_set' as const;
         if (current === null || current === undefined) this.sql.exec(`UPDATE users SET ${col} = ?, ${col === 'google_sub' ? 'google' : 'discord'}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, providerId, now, linkTo);
-        this.addRefresh(linkTo, refreshHash, now);
-        return { ...this.refOf(me), authAt: now, created: false };
+        this.addRefresh(linkTo, refreshHash, now, now, now, null, proof);
+        return { ...this.refOf(me), authAt: now, authLvl: lvl, created: false };
       }
       if (owner) {
         if (num(owner.banned) === 1) return 'no_user' as const;
         const id = str(owner.id);
         this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
-        this.addRefresh(id, refreshHash, now);
-        return { ...this.refOf(owner), authAt: now, created: false };
+        this.addRefresh(id, refreshHash, now, now, now, null, proof);
+        return { ...this.refOf(owner), authAt: now, authLvl: lvl, created: false };
       }
       let name = usernameFromDisplay(suggested);
       for (let n = 0; this.usernameTaken(name); n++) {
@@ -720,45 +798,63 @@ export class AccountStore {
       }
       const id = this.freshId();
       this.sql.exec(`INSERT INTO users (id, username, ukey, ${col}, ${provider}_linked_at, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?)`, id, name, usernameKey(name), providerId, now, now, now);
-      this.addRefresh(id, refreshHash, now);
-      return { userId: id, username: name, car: DEFAULT_CAR, createdAt: now, authAt: now, created: true };
+      this.addRefresh(id, refreshHash, now, now, now, null, proof);
+      return { userId: id, username: name, car: DEFAULT_CAR, createdAt: now, authAt: now, authLvl: lvl, created: true };
     });
   }
 
   /**
    * A re-authentication with a provider (PERFIL's "confirm it is you"): the identity must already
-   * be one of `userId`'s; then a new token for this browser, its credential proof now. 'mismatch'
-   * for another account's identity or none (nothing signs in, nothing is created).
+   * be one of `userId`'s; then a new token for this browser, its credential proof now at `lvl`
+   * (the press on the provider's page, R6). 'mismatch' for another account's identity or none
+   * (nothing signs in, nothing is created).
    */
-  oauthReauth(provider: OAuthProvider, providerId: string, userId: string, refreshHash: string | RefreshGrant, now: number): UserRef | 'mismatch' | 'no_user' {
+  oauthReauth(provider: OAuthProvider, providerId: string, userId: string, refreshHash: string | RefreshGrant, now: number, lvl: 0 | 1 | 2 = 0): UserRef | 'mismatch' | 'no_user' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
     return this.tx(() => {
       const me = this.userById(userId);
       if (me === null || num(me.banned) === 1) return 'no_user' as const;
       if (me[col] === null || me[col] === undefined || str(me[col]) !== providerId) return 'mismatch' as const;
       this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, userId);
-      this.addRefresh(userId, refreshHash, now);
-      return { ...this.refOf(me), authAt: now };
+      this.addRefresh(userId, refreshHash, now, now, now, null, { lvl, method: provider });
+      return { ...this.refOf(me), authAt: now, authLvl: lvl };
     });
   }
 
-  /** A re-authentication with the password (the Worker checked it): this browser's token proves a credential now; null when it is not the account's or a TV's. */
-  markFresh(userId: string, refreshHash: string, now: number): UserRef | null {
+  /**
+   * A re-authentication with the password (the Worker checked it): this browser's token proves a
+   * credential now, at level 2 (a typed password); null when it is not the account's or a TV's.
+   * `rekey`: the password it proved, stored again in the same transaction (a legacy key re-keyed).
+   */
+  markFresh(userId: string, refreshHash: string, now: number, rekey: PasswordRecord | null = null): UserRef | null {
     return this.tx(() => {
       const r = this.sql.exec("SELECT expires_at FROM refresh WHERE hash = ? AND user_id = ? AND kind = 'web'", refreshHash, userId).toArray()[0];
       if (!r || num(r.expires_at) <= now) return null;
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1) return null;
-      this.sql.exec('UPDATE refresh SET auth_at = ? WHERE hash = ?', now, refreshHash);
-      return { ...this.refOf(u), authAt: now };
+      if (rekey !== null) this.setPassword(userId, rekey);
+      this.sql.exec('UPDATE refresh SET auth_at = ?, auth_lvl = 2 WHERE hash = ?', now, refreshHash);
+      return { ...this.refOf(u), authAt: now, authLvl: 2 };
     });
+  }
+
+  /**
+   * The highest level the account can reach (R6's ceiling) with the proofs this build takes: 2 with
+   * a password (a v1 or v2 key: "confirm it's you" takes either), else 1, a press on a provider's
+   * page. A verified email (a code by mail) and Google's forced login join it with their routes.
+   */
+  private ceilingOf(u: Row): 1 | 2 {
+    return u.pw_hash !== null && u.pw_hash !== undefined ? 2 : 1;
   }
 
   /**
    * Remove a provider from the account (PERFIL's unlink): 'last_method' when it is the only way in
    * left (no password and no other provider), 'not_linked' when the account has none of it.
+   * `level`: the caller's session level (fresh). Leaving exactly one way in needs level 2, capped
+   * by the account's ceiling (ceilingOf), so no account is locked out of it: 'level2' when the
+   * session is below what it needs. Leaving two or more needs level 1, which the route checks.
    */
-  unlink(userId: string, provider: OAuthProvider): 'ok' | 'last_method' | 'not_linked' | 'no_user' {
+  unlink(userId: string, provider: OAuthProvider, level: 0 | 1 | 2 = 2): 'ok' | 'last_method' | 'not_linked' | 'no_user' | 'level2' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
     return this.tx(() => {
       const u = this.userById(userId);
@@ -766,9 +862,34 @@ export class AccountStore {
       if (u[col] === null || u[col] === undefined) return 'not_linked' as const;
       const ways = [u.pw_hash, u.google_sub, u.discord_id].filter((v) => v !== null && v !== undefined).length;
       if (ways <= 1) return 'last_method' as const;
+      if (ways - 1 === 1 && level < Math.min(2, this.ceilingOf(u))) return 'level2' as const;
       this.sql.exec(`UPDATE users SET ${col} = NULL, ${provider}_linked_at = NULL WHERE id = ?`, userId);
       return 'ok' as const;
     });
+  }
+
+  // ---- durable sign-in throttles (auth_throttle; the policy and the HMAC'd keys are AccountsDO's) ----
+
+  /** The rows of `keys` that exist. */
+  throttleRows(keys: readonly string[]): Map<string, ThrottleEntry> {
+    const out = new Map<string, ThrottleEntry>();
+    for (const k of keys) {
+      const r = this.sql.exec('SELECT count, first_at, locked_until FROM auth_throttle WHERE key = ?', k).toArray()[0];
+      if (r) out.set(k, { count: num(r.count), first: num(r.first_at), lockedUntil: num(r.locked_until) });
+    }
+    return out;
+  }
+
+  /** Write counters, in one transaction. */
+  throttleWrite(rows: ReadonlyMap<string, ThrottleEntry>): void {
+    this.tx(() => {
+      for (const [k, e] of rows) this.sql.exec('INSERT OR REPLACE INTO auth_throttle (key, count, first_at, locked_until) VALUES (?, ?, ?, ?)', k, e.count, e.first, e.lockedUntil);
+    });
+  }
+
+  /** A success: these counters start again. */
+  throttleClear(keys: readonly string[]): void {
+    for (const k of keys) this.sql.exec('DELETE FROM auth_throttle WHERE key = ?', k);
   }
 
   // ---- email (the sign-in design's data model; the routes that prove a mailbox come later) ---------
@@ -1193,6 +1314,43 @@ export class AccountStore {
       this.sql.exec('DELETE FROM presets WHERE user_id = ? AND preset_id = ?', userId, presetId);
       return { enabled: this.experimentalEnabled(userId), presets: this.presets(userId) };
     });
+  }
+
+  // ---- public replays (src/net/replays.ts) --------------------------------------------------------
+
+  private replayNameHidden(userId: string): boolean {
+    return num(this.sql.exec('SELECT hidden FROM replay_names WHERE user_id = ?', userId).toArray()[0]?.hidden) === 1;
+  }
+
+  /** GET /api/me/replay-name: whether the account's name is hidden in the public replays (default: shown). */
+  replayName(userId: string): { hidden: boolean } | 'no_user' {
+    if (this.userById(userId) === null) return 'no_user';
+    return { hidden: this.replayNameHidden(userId) };
+  }
+
+  setReplayName(userId: string, hidden: boolean, now: number): { hidden: boolean } | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      this.sql.exec(
+        'INSERT INTO replay_names (user_id, hidden, updated_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET hidden = excluded.hidden, updated_at = excluded.updated_at',
+        userId, hidden ? 1 : 0, now,
+      );
+      return { hidden };
+    });
+  }
+
+  /**
+   * POST /replay-hidden (the NodeRegistryDO, serving replay rows): which of `ids` (player ids: an
+   * account's, or a guest's, which never has a row) and of `names` (a legacy row's names, looked up
+   * as usernames today) belong to an account that hides its name.
+   */
+  replayHidden(ids: readonly string[], names: readonly string[]): { ids: string[]; names: string[] } {
+    const hidIds = ids.filter((id) => this.replayNameHidden(id));
+    const hidNames = names.filter((n) => {
+      const u = this.userByKey(usernameKey(n));
+      return u !== null && this.replayNameHidden(str(u.id));
+    });
+    return { ids: hidIds, names: hidNames };
   }
 
   // ---- cars and the hosts' shop -------------------------------------------------------------------
