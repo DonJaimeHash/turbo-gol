@@ -47,8 +47,30 @@ function write(store: Store | null, key: string, value: string | null): void {
     if (value === null) store?.removeItem(key);
     else store?.setItem(key, value);
   } catch {
-    /* private mode, storage off: it lasts this page */
+    /* private mode, storage off: pageStore's copy lasts this page */
   }
+}
+
+/**
+ * `store` (sessionStorage, or null when the browser has none) with this page's own copy of what
+ * the page wrote: that reads back from memory first, so with storage off or throwing (site data
+ * blocked, a private mode) the sign-up's attempt and a link's token still last this page (CONTINUAR
+ * reaches the code step, a second CONTINUAR mails nothing); a reload reads the real storage again.
+ * A tab's sessionStorage is its own, so the copy never hides another tab's write.
+ */
+export function pageStore(store: Store | null): Store {
+  const mine = new Map<string, string | null>();
+  return {
+    getItem: (key) => (mine.has(key) ? (mine.get(key) ?? null) : read(store, key)),
+    setItem: (key, value) => {
+      mine.set(key, String(value));
+      write(store, key, String(value));
+    },
+    removeItem: (key) => {
+      mine.set(key, null);
+      write(store, key, null);
+    },
+  };
 }
 
 // ---- the sign-up attempt -------------------------------------------------------------------------------

@@ -421,3 +421,70 @@ test('cleanCode, localResendAt, providersText, inAppBrowser, signupNamePrefill',
   assert.match(E.signupNamePrefill('Player', null, valid, () => 0.5), /^Player\d{4}$/);
   assert.match(E.signupNamePrefill('Invitado', '4821', valid, () => 0.1), /^Player\d{4}$/, 'a reserved word falls back');
 });
+
+// ---- sessionStorage off (site data blocked, a private mode): this page's own copy ---------------------------
+
+test('storage off or throwing: the attempt of CONTINUAR lasts the page (the code step, no second mail), RESEND moves it, a finish or "use another email" drops it; a link\'s token too', async () => {
+  const throwing = { getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('SecurityError'); }, removeItem() { throw new Error('SecurityError'); } };
+  for (const [what, store] of [['no sessionStorage', null], ['a throwing one', throwing]]) {
+    const srv = fakeServer({
+      '/api/auth/signup/start': () => res(200, { attempt: ATTEMPT, resendAt: NOW + 60_000, codeLength: 6 }),
+      '/api/auth/code/resend': () => res(200, { resendAt: NOW + 2 * 60_000, resendsLeft: 2 }),
+      '/api/auth/signup/finish': () => res(200, { ...SESSION(), email: 'ana@example.com' }),
+    });
+    let now = NOW;
+    const acc = new AC.AccountClient({ storage: memStorage(), session: store, fetchFn: srv.fetchFn, now: () => now, sleep: async () => undefined, antiBot: async () => 'tok' });
+    const starts = () => srv.calls.filter((c) => c.path === '/api/auth/signup/start').length;
+    // PERFIL's CONTINUAR (profile.ts signupEmailForm): a new signup/start only without an attempt for the address.
+    const continuar = async (address) => {
+      const kept = acc.signupAttempt();
+      if (kept === null || kept.email !== address) await acc.signupStart(address);
+      return acc.signupAttempt();
+    };
+    const a = await continuar('ana@example.com');
+    assert.equal(a?.attempt, ATTEMPT, `${what}: the code step (guestView reads the attempt back)`);
+    assert.equal((await continuar('ana@example.com'))?.attempt, ATTEMPT);
+    assert.equal(starts(), 1, `${what}: Back, then CONTINUAR with the same address: no second mail`);
+    await acc.codeResend(ATTEMPT);
+    assert.equal(acc.signupAttempt().resendAt, NOW + 2 * 60_000, `${what}: RESEND's next minute`);
+    now = NOW + 31 * 60_000;
+    assert.equal(acc.signupAttempt(), null, `${what}: stale after 30 minutes, as in storage`);
+    now = NOW;
+    acc.dropSignupAttempt();
+    assert.equal(acc.signupAttempt(), null, `${what}: "use another email"`);
+    await continuar('ana@example.com');
+    assert.equal(starts(), 2);
+    await acc.signupFinish({ attempt: ATTEMPT, code: '123456' }, { username: 'Mariana', password: 'una clave bastante larga', news: false, email: 'ana@example.com' });
+    assert.equal(acc.signupAttempt(), null, `${what}: gone once the account exists`);
+    // A mailed link's token, kept until its POST settles.
+    acc.keepPendingLink({ kind: 'reset', token: TOKEN });
+    assert.deepEqual(acc.pendingLink(), { kind: 'reset', token: TOKEN }, `${what}: the link's token`);
+    acc.keepPendingLink(null);
+    assert.equal(acc.pendingLink(), null);
+    // A reload starts again: nothing was kept anywhere.
+    const reloaded = new AC.AccountClient({ storage: memStorage(), session: store, fetchFn: srv.fetchFn, now: () => NOW });
+    assert.equal(reloaded.signupAttempt(), null);
+  }
+});
+
+test("pageStore: what this page wrote reads back first (storage off, or a write it refused); the rest is the store's", () => {
+  const backing = memStorage();
+  backing.setItem('k-other', 'from before');
+  const s = E.pageStore(backing);
+  assert.equal(s.getItem('k-other'), 'from before', 'a reload reads the real storage');
+  s.setItem('k', 'v1');
+  assert.equal(backing.getItem('k'), 'v1', 'written through');
+  assert.equal(s.getItem('k'), 'v1');
+  s.removeItem('k-other');
+  assert.equal(s.getItem('k-other'), null);
+  assert.equal(backing.getItem('k-other'), null);
+  const full = { getItem: (k) => backing.getItem(k), setItem() { throw new Error('QuotaExceededError'); }, removeItem: (k) => backing.removeItem(k) };
+  backing.setItem('k', 'old');
+  const q = E.pageStore(full);
+  q.setItem('k', 'new');
+  assert.equal(q.getItem('k'), 'new', 'a write the store refused still reads back');
+  const off = E.pageStore(null);
+  assert.equal(off.getItem('k'), null);
+  off.setItem('k', 'v');
+  assert.equal(off.getItem('k'), 'v');
+});

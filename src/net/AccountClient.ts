@@ -30,7 +30,7 @@
  */
 import { legacyPasswordKey, normalizeEmail, passwordIssue, passwordKey, usernameIssue } from './account';
 import type { AccountIssue, AccountSession, CodeResendAnswer, CodeStartAnswer, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, PasswordLinkAnswer, Playlist, RankedResultAnswer, ResetPeekAnswer, SignupCheckAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from './account';
-import { DEAD_LINK_CODES, keepAttempt, keepLastSignIn, keepLink, localResendAt, readAttempt, readLastSignIn, readLink } from './emailAuth';
+import { DEAD_LINK_CODES, keepAttempt, keepLastSignIn, keepLink, localResendAt, pageStore, readAttempt, readLastSignIn, readLink } from './emailAuth';
 import type { AccountLink, LastSignIn, LegacyPhase, StoredAttempt } from './emailAuth';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
 import { claimAnswerOf, itemsAnswerOf, shopAnswerOf } from './cosmetics';
@@ -192,7 +192,7 @@ function isDevice(v: unknown): v is DeviceSession {
 const REFRESH_RACE_RETRY_MS = 400;
 
 export interface AccountClientOptions {
-  /** sessionStorage (a sign-up's attempt, a mailed link's token: src/net/emailAuth.ts); null disables it (tests). */
+  /** sessionStorage (a sign-up's attempt, a mailed link's token: src/net/emailAuth.ts); null: none (a browser with storage off, tests), this page's own copy only (pageStore). */
   session?: StorageLike | null;
   apiBase?: string;
   fetchFn?: FetchLike;
@@ -266,8 +266,8 @@ export class AccountClient {
   private readonly listeners = new Set<() => void>();
   /** authConfig's one GET /api/config (devSignInOffered's too), once asked. */
   private authCfg: Promise<AuthConfig> | null = null;
-  /** sessionStorage: the sign-up's attempt and a mailed link's token (src/net/emailAuth.ts). */
-  private readonly sessionStore: StorageLike | null;
+  /** sessionStorage: the sign-up's attempt and a mailed link's token (src/net/emailAuth.ts), with this page's copy (pageStore: storage off, it lasts the page). */
+  private readonly sessionStore: StorageLike;
 
   private readonly apiBase: string;
   private readonly fetchFn: FetchLike;
@@ -284,7 +284,7 @@ export class AccountClient {
     this.storage = opts.storage === undefined ? defaultStorage() : opts.storage;
     this.now = opts.now ?? Date.now;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-    this.sessionStore = opts.session === undefined ? defaultSessionStorage() : opts.session;
+    this.sessionStore = pageStore(opts.session === undefined ? defaultSessionStorage() : opts.session);
   }
 
   get signedIn(): boolean {
@@ -1099,7 +1099,7 @@ export class AccountClient {
   /** A provider button is pressed (before the redirect): once its round trip signs this browser in, the sign-in tab offers it first. */
   providerStarted(p: OAuthProvider): void {
     try {
-      this.sessionStore?.setItem(PROVIDER_TRY_KEY, JSON.stringify({ p, at: this.now() }));
+      this.sessionStore.setItem(PROVIDER_TRY_KEY, JSON.stringify({ p, at: this.now() }));
     } catch {
       /* storage off: no "continue as" */
     }
@@ -1108,9 +1108,9 @@ export class AccountClient {
   /** A restore signed `name` in: right after a provider's round trip, this device remembers that provider. */
   private providerReturned(name: string): void {
     try {
-      const raw = this.sessionStore?.getItem(PROVIDER_TRY_KEY) ?? null;
+      const raw = this.sessionStore.getItem(PROVIDER_TRY_KEY) ?? null;
       if (raw === null) return;
-      this.sessionStore?.removeItem(PROVIDER_TRY_KEY);
+      this.sessionStore.removeItem(PROVIDER_TRY_KEY);
       const v = JSON.parse(raw) as { p?: unknown; at?: unknown };
       if ((v.p === 'google' || v.p === 'discord') && typeof v.at === 'number' && this.now() - v.at < PROVIDER_TRY_MS) this.rememberSignIn(name, v.p);
     } catch {
