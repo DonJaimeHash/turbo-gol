@@ -151,7 +151,7 @@ async function passwordAccount(env, obj, name, ip = '198.18.200.1', extra = {}) 
 }
 
 /** A full OAuth round trip through the Worker with the fake provider answering `who`. */
-async function oauth(env, provider, who, { query = '', cookie, ip = '198.18.201.1' } = {}) {
+async function oauth(env, provider, who, { query = '', cookie, noCreate = false, ip = '198.18.201.1' } = {}) {
   identity[provider] = provider === 'google' ? { sub: who, given_name: 'Ana' } : { id: who, username: who };
   const start = await req(env, 'GET', `/api/auth/oauth/${provider}/start${query}`, { ip, cookie, origin: null });
   if (start.status !== 302 || !start.location.startsWith('https://')) return { start, done: null };
@@ -159,6 +159,12 @@ async function oauth(env, provider, who, { query = '', cookie, ip = '198.18.201.
   const nonce = new URL(start.location).searchParams.get('state');
   // The provider's redirect back is a cross-site navigation: the SameSite=Strict refresh cookie is not sent.
   const done = await req(env, 'GET', `/api/auth/oauth/${provider}/callback?code=x&state=${nonce}`, { ip, cookie: '__Host-tg_oa=' + state, origin: null });
+  // Sign-in PR 6: an identity nobody owns makes no account; the confirm sheet's CREAR does (a name of the test's own).
+  if (done.location === '/#auth=confirm' && !noCreate) {
+    const pend = cookieOf(done, '__Host-tg_pend');
+    const made = await req(env, 'POST', '/api/auth/pending/create', { ip, cookie: '__Host-tg_pend=' + pend, body: { username: 'u' + who.replace(/[^A-Za-z0-9]/g, '').slice(0, 14) } });
+    return { start, done, made, created: made.status === 200, rt: cookieOf(made, '__Host-tg_rt') };
+  }
   return { start, done, rt: cookieOf(done, '__Host-tg_rt') };
 }
 
@@ -253,7 +259,8 @@ test('auth-4: PERFIL\'s devices: each signed-in browser with where it signed in,
   const ip = ips();
   // Two browsers of a Discord-only account.
   const a = await oauth(env, 'discord', 'd-ana', { ip: ip(0) });
-  assert.equal(a.done.location, '/#auth=new');
+  assert.equal(a.done.location, '/#auth=confirm');
+  assert.equal(a.created, true, 'made by the confirm step');
   const sa = await refresh(env, a.rt, ip(0));
   const b = await oauth(env, 'discord', 'd-ana', { ip: ip(1) });
   const sb = await refresh(env, b.rt, ip(1));
@@ -517,7 +524,8 @@ test('auth-2: a link never replaces the account\'s own Google id (409 provider_s
   const back = await oauth(env, 'google', 'victim-sub', { ip: ip(0) });
   assert.equal((await refresh(env, back.rt, ip(0))).json.playerId, victimId, "the victim's Google still opens the victim's account");
   const atkSignIn = await oauth(env, 'google', 'attacker-sub', { ip: ip(1) });
-  assert.equal(atkSignIn.done.location, '/#auth=new', "the attacker's Google is a new account of its own");
+  assert.equal(atkSignIn.done.location, '/#auth=confirm', "the attacker's Google is no account: the confirm step asks");
+  assert.notEqual(atkSignIn.made.json.playerId, victimId, 'a new account of its own');
 });
 
 test('authz-1: a second provider needs a credential proved on this browser in the last 10 minutes; a stolen older cookie links nothing', async () => {

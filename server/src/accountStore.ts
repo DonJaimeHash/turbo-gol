@@ -65,7 +65,7 @@
  */
 import { PLACEMENT_MATCHES, abandonBanMs, ABANDON_WINDOW_MS, mmrOf, newRating, rateRankedMatch, tierOf } from '../../src/net/rating';
 import type { Rating } from '../../src/net/rating';
-import { emailCanon, looksLikeDomain, normalizeEmail, PLAYLISTS, usernameKey } from '../../src/net/account';
+import { emailCanon, normalizeEmail, PLAYLISTS, usernameIssue, usernameKey } from '../../src/net/account';
 import type { LeaderboardAnswer, LeaderboardEntry, MeInfo, OAuthProvider, Playlist, PlaylistRating, RankedResultAnswer } from '../../src/net/account';
 import { mergeTrainingRecords, parseTrainingRecords } from '../../src/game/trainingRecords';
 import type { TrainingRecords } from '../../src/game/trainingRecords';
@@ -320,25 +320,70 @@ export function randomId(): string {
   return s;
 }
 
+/** 16 random bytes as base64url (22 characters): users.unsub_id, an opaque id that carries nothing. */
+function randomToken(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// ---- provider identities and the confirm step (the sign-in design's \u00a72.7, \u00a73.8) -----------------
+
 /**
- * An OAuth display name turned into a valid username candidate: ASCII letters / digits / _ . -,
- * diacritics stripped, 3-16 chars (padded with digits when too short). Uniqueness is the caller's.
+ * How far a provider vouches for the address it gave (the Worker's providerTrust decides it from
+ * the provider's own answer, never from a client: I9). 'auth': Google is authoritative for that
+ * mailbox (Gmail, no Workspace `hd`): it claims the canon. 'asserted': a verified address the
+ * provider may not own any more (Discord's, a Workspace one): it finds a match and becomes a hint.
+ * 'none': no address, or one never verified.
  */
-export function usernameFromDisplay(display: string): string {
-  let s = display
-    .trim()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, '_')
-    .replace(/[^A-Za-z0-9_.-]/g, '')
-    .replace(/^[^A-Za-z0-9]+/, '')
-    .replace(/[_.-]+$/, '');
-  s = s.slice(0, 16);
-  if (looksLikeDomain(s)) s = s.replace(/\./g, '_'); // a Discord name 'tg-verify.com' never becomes a web-address username
-  const k = s.toLowerCase();
-  if (k.startsWith('guest') || k.startsWith('bot') || k === 'admin') s = 'P' + s.slice(0, 15);
-  while (s.length < 3) s += String(Math.floor(Math.random() * 10));
-  return s;
+export type ProviderTrust = 'auth' | 'asserted' | 'none';
+
+/** A provider's address as the Worker read it from the provider's answer (null: none). */
+export interface ProviderEmail {
+  email: string | null;
+  trust: ProviderTrust;
+}
+
+/** One provider identity proved in this browser: the pending cookie's `p`, `id`, `email` and `trust`. */
+export interface PendingIdent extends ProviderEmail {
+  p: OAuthProvider;
+  id: string;
+}
+
+/** The pending cookie as AccountsDO reads it: an identity no account owns, and another one proved after it (p2, another provider). */
+export interface PendingIdentity extends PendingIdent {
+  p2?: PendingIdent | null;
+}
+
+/** The account a pending address leads to (POST /api/auth/pending's `match`), with its id for the link rules. */
+export interface EmailMatch {
+  userId: string;
+  name: string;
+  /** Its ways in: the buttons of the match sheet. */
+  methods: Array<'password' | OAuthProvider>;
+  /** It claimed the canon (or holds it for an undo), or only carries it as a hint. */
+  via: 'email' | 'hint';
+  /** The provider address that led to it (the person's own: they just proved it). */
+  email: string;
+}
+
+/** linkPending's outcome: linked, or why not (the sign-in itself stands either way). */
+export type LinkPendingResult = 'linked' | 'wrong_account' | 'provider_set' | 'already_linked' | 'no_user';
+
+const NO_EMAIL: ProviderEmail = { email: null, trust: 'none' };
+
+/** The users column of a provider's id. */
+function providerCol(p: OAuthProvider): 'google_sub' | 'discord_id' {
+  return p === 'google' ? 'google_sub' : 'discord_id';
+}
+
+/** A pending identity and its second one, each provider once (the first kept). */
+function pendingIdents(pend: PendingIdentity): PendingIdent[] {
+  const out: PendingIdent[] = [{ p: pend.p, id: pend.id, email: pend.email, trust: pend.trust }];
+  if (pend.p2 && pend.p2.p !== pend.p) out.push(pend.p2);
+  return out;
 }
 
 export class AccountStore {
@@ -744,15 +789,17 @@ export class AccountStore {
   }
 
   /**
-   * Sign in (or sign up) with an OAuth identity. `linkTo` = the signed-in account that asked to
-   * link it (profile screen). A new account takes `suggested` (made unique with a numeric suffix).
-   * A link never replaces the account's own id of that provider ('provider_set': an unlink comes
-   * first) and a suspended account links nothing ('no_user'). `lvl`: the level of the press on the
-   * provider's page that brought the identity (R6; the Worker knows the prompt it asked for), the
-   * new token's; its method is the provider.
+   * Sign in with an OAuth identity, or link it (`linkTo`: the signed-in account that asked, PERFIL's
+   * VINCULAR). It never creates an account (I3): an identity no account owns answers 'pending', and
+   * the Worker's confirm step asks first (createFromPending). A link never replaces the account's
+   * own id of that provider ('provider_set': an unlink comes first) and a suspended account links
+   * nothing ('no_user'). `lvl`: the level of the press on the provider's page that brought the
+   * identity (R6; the Worker knows the prompt it asked for), the new token's; its method is the
+   * provider. `found`: the provider's address, which an account without a verified one takes as
+   * its email (auth) or its hint (asserted) in the same transaction (§3.8 step 6). No name is read.
    */
-  oauth(provider: OAuthProvider, providerId: string, suggested: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number, lvl: 0 | 1 | 2 = 0): (UserRef & { created: boolean }) | 'already_linked' | 'provider_set' | 'no_user' {
-    const col = provider === 'google' ? 'google_sub' : 'discord_id';
+  oauth(provider: OAuthProvider, providerId: string, linkTo: string | null, refreshHash: string | RefreshGrant, now: number, lvl: 0 | 1 | 2 = 0, found: ProviderEmail = NO_EMAIL): UserRef | 'pending' | 'already_linked' | 'provider_set' | 'no_user' {
+    const col = providerCol(provider);
     const proof: SignInProof = { lvl, method: provider };
     return this.tx(() => {
       const owner = this.sql.exec(`SELECT id, username, banned, created_at FROM users WHERE ${col} = ?`, providerId).toArray()[0];
@@ -762,26 +809,18 @@ export class AccountStore {
         if (owner && str(owner.id) !== linkTo) return 'already_linked' as const;
         const current = me[col];
         if (current !== null && current !== undefined && str(current) !== providerId) return 'provider_set' as const;
-        if (current === null || current === undefined) this.sql.exec(`UPDATE users SET ${col} = ?, ${col === 'google_sub' ? 'google' : 'discord'}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, providerId, now, linkTo);
+        if (current === null || current === undefined) this.sql.exec(`UPDATE users SET ${col} = ?, ${provider}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, providerId, now, linkTo);
+        this.fillEmailIn(linkTo, found, provider, now);
         this.addRefresh(linkTo, refreshHash, now, now, now, null, proof);
-        return { ...this.refOf(me), authAt: now, authLvl: lvl, created: false };
+        return { ...this.refOf(me), authAt: now, authLvl: lvl };
       }
-      if (owner) {
-        if (num(owner.banned) === 1) return 'no_user' as const;
-        const id = str(owner.id);
-        this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
-        this.addRefresh(id, refreshHash, now, now, now, null, proof);
-        return { ...this.refOf(owner), authAt: now, authLvl: lvl, created: false };
-      }
-      let name = usernameFromDisplay(suggested);
-      for (let n = 0; this.usernameTaken(name); n++) {
-        const suffix = String(n < 5 ? Math.floor(Math.random() * 100) : Math.floor(Math.random() * 100000));
-        name = name.slice(0, 16 - suffix.length) + suffix;
-      }
-      const id = this.freshId();
-      this.sql.exec(`INSERT INTO users (id, username, ukey, ${col}, ${provider}_linked_at, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?)`, id, name, usernameKey(name), providerId, now, now, now);
+      if (!owner) return 'pending' as const;
+      if (num(owner.banned) === 1) return 'no_user' as const;
+      const id = str(owner.id);
+      this.sql.exec('UPDATE users SET last_login = ? WHERE id = ?', now, id);
+      this.fillEmailIn(id, found, provider, now);
       this.addRefresh(id, refreshHash, now, now, now, null, proof);
-      return { userId: id, username: name, car: DEFAULT_CAR, createdAt: now, authAt: now, authLvl: lvl, created: true };
+      return { ...this.refOf(owner), authAt: now, authLvl: lvl };
     });
   }
 
@@ -896,13 +935,18 @@ export class AccountStore {
     return this.tx(() => {
       if (this.userById(userId) === null) return 'no_user' as const;
       if (this.canonTaken(canon, userId)) return 'taken' as const;
-      this.sql.exec(
-        "UPDATE users SET email = ?, email_canon = ?, email_verified_at = ?, email_proof = ?, email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE id = ?",
-        address, canon, now, proof, userId,
-      );
-      this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", canon, userId);
+      this.claimIn(userId, address, canon, proof, now);
       return 'ok' as const;
     });
+  }
+
+  /** claimEmail's writes, inside the caller's transaction: the address claimed, this account's hint and every other account's hint of that canon gone. */
+  private claimIn(userId: string, address: string, canon: string, proof: EmailProof, now: number): void {
+    this.sql.exec(
+      "UPDATE users SET email = ?, email_canon = ?, email_verified_at = ?, email_proof = ?, email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE id = ?",
+      address, canon, now, proof, userId,
+    );
+    this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE email_hint_canon = ? AND id != ?", canon, userId);
   }
 
   /**
@@ -921,6 +965,159 @@ export class AccountStore {
       if (claimed || this.sql.exec('SELECT 1 AS x FROM email_holds WHERE canon = ?', canon).toArray().length > 0) return 'claimed' as const;
       this.sql.exec('UPDATE users SET email_hint = ?, email_hint_canon = ?, email_hint_from = ? WHERE id = ?', address, canon, from, userId);
       return 'ok' as const;
+    });
+  }
+
+  // ---- the confirm step: a provider identity no account owns (the sign-in design's §2.7, §3.8) ----
+
+  /** A provider address that may lead to an account: only one the provider says it verified (auth, asserted), normalized here (I9). */
+  private trustedCanon(e: ProviderEmail): { address: string; canon: string } | null {
+    if (e.trust !== 'auth' && e.trust !== 'asserted') return null;
+    const address = normalizeEmail(e.email);
+    const canon = emailCanon(e.email);
+    return address === null || canon === null ? null : { address, canon };
+  }
+
+  /** Some account claims `canon`, or an email change's undo holds it (this one included). */
+  private canonClaimed(canon: string): boolean {
+    if (this.sql.exec('SELECT 1 AS x FROM users WHERE email_canon = ?', canon).toArray().length > 0) return true;
+    return this.sql.exec('SELECT 1 AS x FROM email_holds WHERE canon = ?', canon).toArray().length > 0;
+  }
+
+  /** An account's ways in, as the match sheet offers them: its password, Google, Discord. */
+  private methodsOf(u: Row): EmailMatch['methods'] {
+    const out: EmailMatch['methods'] = [];
+    if (u.pw_hash !== null && u.pw_hash !== undefined) out.push('password');
+    if (u.google_sub !== null && u.google_sub !== undefined) out.push('google');
+    if (u.discord_id !== null && u.discord_id !== undefined) out.push('discord');
+    return out;
+  }
+
+  /**
+   * The account a provider address leads to (§2.7 POST /api/auth/pending): the one that claimed its
+   * canon or holds it for an undo (via 'email'), else the oldest that carries it as a hint (via
+   * 'hint'); null for none, and for an address the provider did not verify. One email, one account:
+   * whoever proves a provider identity with that verified address signs in there and links, never
+   * makes a second one.
+   */
+  emailMatch(e: ProviderEmail): EmailMatch | null {
+    const c = this.trustedCanon(e);
+    if (c === null) return null;
+    const as = (u: Row | undefined, via: EmailMatch['via']): EmailMatch | null => (u ? { userId: str(u.id), name: str(u.username), methods: this.methodsOf(u), via, email: c.address } : null);
+    const claimed = this.sql.exec('SELECT * FROM users WHERE email_canon = ?', c.canon).toArray()[0];
+    if (claimed) return as(claimed, 'email');
+    const held = this.sql.exec('SELECT user_id FROM email_holds WHERE canon = ?', c.canon).toArray()[0];
+    const holder = held ? this.userById(str(held.user_id)) : null;
+    if (holder !== null) return as(holder, 'email');
+    return as(this.sql.exec('SELECT * FROM users WHERE email_hint_canon = ? ORDER BY created_at, id LIMIT 1', c.canon).toArray()[0], 'hint');
+  }
+
+  /** The match of a pending identity: its own address's, else its second identity's. */
+  pendingMatch(pend: PendingIdentity): EmailMatch | null {
+    for (const i of pendingIdents(pend)) {
+      const m = this.emailMatch(i);
+      if (m !== null) return m;
+    }
+    return null;
+  }
+
+  /**
+   * §3.8 step 6, inside the caller's transaction: an account without a verified address takes a
+   * provider's. 'auth' with the canon free claims it (email_proof 'google'; every other hint of it
+   * goes); 'asserted' with the canon claimed by nobody and held by nobody sets the account's hint,
+   * or replaces it (a provider address that changed); anything else changes nothing. An account's
+   * verified address is its own and never follows a provider.
+   */
+  private fillEmailIn(userId: string, found: ProviderEmail, from: OAuthProvider, now: number): void {
+    const u = this.userById(userId);
+    if (u === null || (u.email_canon !== null && u.email_canon !== undefined)) return;
+    const c = this.trustedCanon(found);
+    if (c === null) return;
+    if (found.trust === 'auth') {
+      if (!this.canonTaken(c.canon, userId)) this.claimIn(userId, c.address, c.canon, 'google', now);
+      return;
+    }
+    if (this.canonClaimed(c.canon)) return;
+    this.sql.exec('UPDATE users SET email_hint = ?, email_hint_canon = ?, email_hint_from = ? WHERE id = ?', c.address, c.canon, from, userId);
+  }
+
+  /**
+   * A free name near `username` for a 409 username_taken (§5.1): the same word with four new
+   * digits, valid and free right now; 'Jugador' when the word is too short.
+   */
+  suggestUsername(username: string): string {
+    let word = username.replace(/[0-9_.-]+$/, '').slice(0, 12);
+    if (word.length < 3 || usernameIssue(word + '1234') !== null) word = 'Jugador';
+    for (let i = 0; i < 50; i++) {
+      const digits = i < 40 ? 4 : 16 - word.length;
+      const n = Math.floor(Math.random() * 10 ** digits).toString().padStart(digits, '0');
+      const name = (word + n).slice(0, 16);
+      if (usernameIssue(name) === null && !this.usernameTaken(name)) return name;
+    }
+    return word;
+  }
+
+  /**
+   * POST /api/auth/pending/create (§2.7): the one way an OAuth identity becomes an account, after
+   * the confirm sheet's CREAR and a solved check (the Worker's). The pending identity and its
+   * second one (p2) both go on it; the name is the player's own (never the provider's); the address
+   * becomes its email with 'auth' trust and its hint with 'asserted' (the first of the two that
+   * has one). Refused when the name is taken, when either identity got an owner meanwhile
+   * ('already_linked'), and when the address leads to an account, a race included
+   * ('email_has_account': that account signs in and links). `lvl`: the callback's level; the
+   * family's method is the provider. `news`: the news switch, a consent row only when it is on.
+   */
+  createFromPending(pend: PendingIdentity, username: string, refreshHash: string | RefreshGrant, now: number, opts: { lvl?: 0 | 1 | 2; lang?: string; tz?: string; news?: boolean } = {}): UserRef | 'username_taken' | 'email_has_account' | 'already_linked' {
+    const idents = pendingIdents(pend);
+    const lvl = opts.lvl ?? 0;
+    return this.tx(() => {
+      if (this.usernameTaken(username)) return 'username_taken' as const;
+      for (const i of idents) if (this.sql.exec(`SELECT 1 AS x FROM users WHERE ${providerCol(i.p)} = ?`, i.id).toArray().length > 0) return 'already_linked' as const;
+      if (this.pendingMatch(pend) !== null) return 'email_has_account' as const;
+      const id = this.freshId();
+      const google = idents.find((i) => i.p === 'google') ?? null;
+      const discord = idents.find((i) => i.p === 'discord') ?? null;
+      this.sql.exec(
+        'INSERT INTO users (id, username, ukey, google_sub, google_linked_at, discord_id, discord_linked_at, lang, tz, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        id, username, usernameKey(username), google?.id ?? null, google ? now : null, discord?.id ?? null, discord ? now : null, opts.lang ?? '', opts.tz ?? '', now, now,
+      );
+      const best = idents.find((i) => i.trust === 'auth' && this.trustedCanon(i) !== null) ?? idents.find((i) => i.trust === 'asserted' && this.trustedCanon(i) !== null);
+      if (best !== undefined) this.fillEmailIn(id, best, best.p, now);
+      if (opts.news === true) {
+        this.sql.exec("INSERT INTO consents (user_id, kind, version, granted, source, at) VALUES (?, 'news', 'news-v1', 1, 'oauth_signup', ?)", id, now);
+        this.sql.exec('UPDATE users SET unsub_id = ? WHERE id = ? AND unsub_id IS NULL', randomToken(), id);
+      }
+      this.addRefresh(id, refreshHash, now, now, now, null, { lvl, method: pend.p });
+      return { userId: id, username, car: DEFAULT_CAR, createdAt: now, authAt: now, authLvl: lvl };
+    });
+  }
+
+  /**
+   * The rules of linkPending and pend (§3.8), after a sign-in of `userId` in this browser: the
+   * pending identity (and its second one) go on that account when the address leads nowhere else
+   * ('wrong_account': it leads to another account, which must sign in instead), the account's slot
+   * for each provider is free ('provider_set') and no account owns either identity
+   * ('already_linked'). All or nothing; then the address fills the email in (step 6).
+   */
+  linkPending(userId: string, pend: PendingIdentity, now: number): LinkPendingResult {
+    const idents = pendingIdents(pend);
+    return this.tx(() => {
+      const u = this.userById(userId);
+      if (u === null || num(u.banned) === 1) return 'no_user' as const;
+      const match = this.pendingMatch(pend);
+      if (match !== null && match.userId !== userId) return 'wrong_account' as const;
+      for (const i of idents) {
+        const current = u[providerCol(i.p)];
+        if (current !== null && current !== undefined && str(current) !== i.id) return 'provider_set' as const;
+        const owner = this.sql.exec(`SELECT id FROM users WHERE ${providerCol(i.p)} = ?`, i.id).toArray()[0];
+        if (owner && str(owner.id) !== userId) return 'already_linked' as const;
+      }
+      for (const i of idents) {
+        const col = providerCol(i.p);
+        this.sql.exec(`UPDATE users SET ${col} = ?, ${i.p}_linked_at = ? WHERE id = ? AND ${col} IS NULL`, i.id, now, userId);
+        this.fillEmailIn(userId, i, i.p, now);
+      }
+      return 'linked' as const;
     });
   }
 

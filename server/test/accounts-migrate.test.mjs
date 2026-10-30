@@ -425,7 +425,7 @@ test('a password written now is the legacy key: register, a password change and 
   const pwv = (id) => db.prepare('SELECT pw_v FROM users WHERE id = ?').get(id).pw_v;
   const a = store.register('Ana', PW, [H('c')], H('1'), NOW).userId;
   assert.equal(pwv(a), 1);
-  const g = store.oauth('google', 'g-sub', 'Gus', null, H('2'), NOW);
+  const g = store.createFromPending({ p: 'google', id: 'g-sub', email: null, trust: 'none' }, 'Gus', H('2'), NOW);
   assert.equal(pwv(g.userId), 0, 'no password');
   store.setPassword(g.userId, PW);
   assert.equal(pwv(g.userId), 1);
@@ -457,8 +457,8 @@ test('me(): email, hint, verified, legacy, news (the newest consent), deletion a
   assert.equal(fields(a).news, true, 'another kind does not count');
   db.prepare('UPDATE users SET delete_requested_at = ?, delete_purge_at = ? WHERE id = ?').run(NOW, NOW + 14 * DAY, a);
   assert.equal(fields(a).deletionAt, NOW + 14 * DAY);
-  const f = store.oauth('google', 'g-fede', 'Fede', null, H('2'), NOW).userId;
-  store.oauth('discord', 'd-fede', 'x', f, H('3'), NOW);
+  const f = store.createFromPending({ p: 'google', id: 'g-fede', email: null, trust: 'none' }, 'Fede', H('2'), NOW).userId;
+  store.oauth('discord', 'd-fede', f, H('3'), NOW);
   assert.deepEqual([fields(f).legacy, fields(f).waysIn, fields(f, true).waysIn], [false, 2, 2]);
   db.prepare('UPDATE users SET pw_v = 2 WHERE id = ?').run(a);
   assert.equal(fields(a).legacy, false, 'a current key is not legacy');

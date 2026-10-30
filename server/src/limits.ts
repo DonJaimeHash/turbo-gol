@@ -82,6 +82,9 @@
  *                                       rankedResultNet  network     1200  RL_1200
  *   GET  /api/leaderboard               leaderboardYou   account       60  RL_60    the account's own row: one AccountsDO call (cached 15 s)
  *                                       leaderboardNet   network     1200  RL_1200  the board itself is cached 30 s per isolate
+ *   POST /api/auth/pending              authCreate       network      120  RL_120   the OAuth confirm step (the sign-in design's §2.16): what the
+ *   POST /api/auth/pending/create                                                   sheet shows, CREAR (Turnstile, and AccountsDO's durable cap of
+ *   POST /api/auth/pending/cancel                                                   new accounts per network) and CANCELAR, one count for the three
  *   GET  /nodes/admin/account-stats     accountStats     account       10  RL_10    a maintainer's account counts (nodeRoutes.ts): a few scans
  *                                                                                    of every account in the AccountsDO each
  *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
@@ -180,6 +183,8 @@ export const LIMITS = {
   nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   nodeConnect: { by: 'network', isolate: 30, edge: 'RL_30' },
   nodeConnectWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
+  // The OAuth confirm step (sign-in PR 6).
+  authCreate: { by: 'network', isolate: 120, edge: 'RL_120' },
 } as const satisfies Record<string, LimitRule>;
 export type LimitName = keyof typeof LIMITS;
 
@@ -214,6 +219,11 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['sessions'];
       case '/api/auth/tv/info':
         return ['tvInfo'];
+      // The OAuth confirm step (sign-in PR 6).
+      case '/api/auth/pending':
+      case '/api/auth/pending/create':
+      case '/api/auth/pending/cancel':
+        return ['authCreate'];
     }
     return [];
   }

@@ -120,10 +120,10 @@ test('AccountStore: a fresh account drives the default car; every sign-in path h
     assert.equal(ref.car, DEFAULT_CAR, what);
     assert.equal(ref.createdAt, NOW, `${what}: the account's creation, not the call's`);
   }
-  const o = store.oauth('google', 'g-1', 'Beto', null, H('4'), NOW + 5);
-  assert.deepEqual([o.created, o.car, o.createdAt], [true, DEFAULT_CAR, NOW + 5]);
-  const again = store.oauth('google', 'g-1', 'Beto', null, H('5'), NOW + 6);
-  assert.deepEqual([again.created, again.car, again.createdAt], [false, DEFAULT_CAR, NOW + 5]);
+  const o = store.createFromPending({ p: 'google', id: 'g-1', email: null, trust: 'none' }, 'Beto', H('4'), NOW + 5);
+  assert.deepEqual([o.car, o.createdAt], [DEFAULT_CAR, NOW + 5]);
+  const again = store.oauth('google', 'g-1', null, H('5'), NOW + 6);
+  assert.deepEqual([again.userId, again.car, again.createdAt], [o.userId, DEFAULT_CAR, NOW + 5]);
   assert.deepEqual(store.items(id), { items: [], car: DEFAULT_CAR, cars: [DEFAULT_CAR] });
   assert.equal(store.items('ffffffffffffffff'), 'no_user');
 });

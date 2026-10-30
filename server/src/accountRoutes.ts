@@ -3,9 +3,11 @@
  *
  *   POST /api/auth/register   { username, passwordV2, turnstileToken? } -> RegisterAnswer + refresh cookie (the same
  *                             Turnstile gate as POST /api/guest when it is on)
- *   POST /api/auth/login      { username, password, passwordV2, turnstileToken } -> AccountSession + refresh cookie
- *                             (level 2) | 401 bad_credentials for every refusal (an account with a verified email
- *                             too: it signs in by email) | 403 turnstile_failed | 429 throttled { retryAfterMs }
+ *   POST /api/auth/login      { username, password, passwordV2, turnstileToken, linkPending? } -> AccountSession +
+ *                             refresh cookie (level 2; with linkPending & { linked } | { linkError }: the identity
+ *                             pending in this browser linked, or why not) | 401 bad_credentials for every refusal (an
+ *                             account with a verified email too: it signs in by email) | 403 turnstile_failed | 429
+ *                             throttled { retryAfterMs }
  *   POST /api/auth/refresh    (refresh cookie)                  -> AccountSession (token rotated) | 401 (a copied token:
  *                             its whole family revoked) | 409 refresh_race (another tab rotated it: retry, cookie kept)
  *   POST /api/auth/logout     (refresh cookie)                  -> { ok } + cookie cleared (this device: its whole
@@ -46,8 +48,21 @@
  *   GET  /api/leaderboard?playlist=1v1  [Bearer]                -> LeaderboardAnswer (cached 30 s per playlist; an
  *                             account's own row 15 s per account)
  *   GET  /api/ranked/result?matchId=    Bearer (account)        -> RankedResultAnswer
- *   GET  /api/auth/oauth/:provider/start[?link=1 | ?reauth=1]   -> 302 to Google / Discord (state + PKCE)
- *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | new | linked | reauth | error:<code>
+ *   GET  /api/auth/oauth/:provider/start[?link=1 | ?reauth=1[&then=link:<p>] | ?pend=1] -> 302 to Google / Discord
+ *                             (state + PKCE; scopes: the id and the address, never a name)
+ *   GET  /api/auth/oauth/:provider/callback?code&state          -> 302 to /#auth=ok | linked | reauth | confirm |
+ *                             ok:<linkError> | error:<code>
+ *     The callback never creates an account (the sign-in design's I3): an identity nobody owns goes
+ *     into the pending cookie `__Host-tg_pend` (JWT typ 'pend': { p, id, email, trust, p2? }, HttpOnly,
+ *     SameSite=Lax, 30 minutes) and /#auth=confirm asks "do you already have a Turbogol account?":
+ *   POST /api/auth/pending    {} (pending cookie)                 -> { provider, email, trust, second, match } | 404 no_pending
+ *   POST /api/auth/pending/create { username, news, lang, tz, turnstileToken } (pending cookie) -> AccountSession +
+ *                             refresh cookie | 400 bad_username | 409 username_taken { suggest } | email_has_account |
+ *                             already_linked | 403 turnstile_failed | 404 no_pending | 429 (new accounts per network)
+ *   POST /api/auth/pending/cancel {}                            -> { ok } (the cookie cleared)
+ *     A verified provider address that leads to an account (claimed, held or hinted) refuses the
+ *     create: that account signs in (login with linkPending, or start?pend=1) and the identity is
+ *     linked to it; one email, one account. A Discord address is only a hint (trust 'asserted').
  *     link=1 (PERFIL's VINCULAR) needs this browser's refresh cookie, not a TV's, and a credential
  *     proved on it in the last REAUTH_WINDOW_S (a sign-in, or reauth=1 just before); otherwise the
  *     start answers /#auth=error:reauth_required (or link_expired without a valid cookie) and never
@@ -131,9 +146,9 @@ import type { Env } from './env';
 import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, readJson } from './env';
 import { base64urlDecode, base64urlEncode, internalSecret, INTERNAL_HEADER, nowSeconds, signJwt, verifyJwt } from './auth';
 import type { SessionClaims } from './auth';
-import { isClientKey, isPlaylist, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
+import { isClientKey, isPlaylist, normalizeEmail, OAUTH_PROVIDERS, usernameProblem } from '../../src/net/account';
 import type { AccountSession, LeaderboardAnswer, OAuthProvider, RegisterAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from '../../src/net/account';
-import type { Credentials, PasswordRecord, RefreshGrant, UserRef } from './accountStore';
+import type { Credentials, PasswordRecord, PendingIdent, PendingIdentity, ProviderEmail, ProviderTrust, RefreshGrant, UserRef } from './accountStore';
 import { TV_POLL_MS, ipKey, tvCode } from './tvCodes';
 import { firstUse } from './limits';
 import { PRESET_ID_RE, parseStoredPreset } from '../../src/game/physicsRules';
@@ -682,7 +697,7 @@ async function checkPassword(c: RouteContext, username: string, proof: PasswordP
  */
 async function login(c: RouteContext): Promise<Response> {
   if (c.limited('login:' + ipOf(c.request), 30)) return error(429, 'rate_limited');
-  const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown }>(c.request);
+  const b = await readJson<{ username?: unknown; password?: unknown; passwordV2?: unknown; turnstileToken?: unknown; linkPending?: unknown }>(c.request);
   const proof = proofOf(b?.password, b?.passwordV2);
   if (!b || typeof b.username !== 'string' || b.username.length > 64 || (proof.v1 === undefined && proof.v2 === undefined)) return error(400, 'bad_request');
   // Before the AccountsDO hears of it (R3): a page from before the check sends no token and reloads.
@@ -692,8 +707,12 @@ async function login(c: RouteContext): Promise<Response> {
   if (!chk.ok) return chk.res;
   // This deployment's env, not storeEnv's: an AccountsDO of before ignores a sign-in's `rekey`.
   const rekey = await rekeyFor(c.env, chk.cred, proof);
+  // linkPending (the confirm sheet's "I already have one"): the identity pending in this browser goes
+  // on this account in the sign-in's step, under §3.8's rules; the sign-in stands either way.
+  const linking = b.linkPending === true;
+  const pending = linking ? await readPending(c) : null;
   const refresh = newRefreshToken();
-  const fin = await accountsJson<UserRef>(c.env, '/auth-finish', {
+  const fin = await accountsJson<UserRef & { linked?: OAuthProvider[]; linkError?: string }>(c.env, '/auth-finish', {
     userId: chk.cred.userId,
     username: b.username,
     ip: ipOf(c.request),
@@ -703,9 +722,14 @@ async function login(c: RouteContext): Promise<Response> {
     proved: chk.cred.hash,
     charged: true,
     ...(rekey !== null ? { rekey } : {}),
+    ...(pending !== null ? { pending: pendingBody(pending) } : {}),
   });
   if (!fin.ok) return pass(fin.res);
-  return withCookies(json(await accountSession(c.env, fin.data)), [refreshCookie(refresh), await deviceCookie(c.env, fin.data.userId)]);
+  const cookies = [refreshCookie(refresh), await deviceCookie(c.env, fin.data.userId)];
+  if (!linking) return withCookies(json(await accountSession(c.env, fin.data)), cookies);
+  cookies.push(clearCookie(PENDING_COOKIE, 'Lax'));
+  const link = pending === null ? { linkError: 'no_pending' } : Array.isArray(fin.data.linked) ? { linked: fin.data.linked } : { linkError: typeof fin.data.linkError === 'string' ? fin.data.linkError : 'no_pending' };
+  return withCookies(json({ ...(await accountSession(c.env, fin.data)), ...link }), cookies);
 }
 
 async function refresh(c: RouteContext): Promise<Response> {
@@ -1154,7 +1178,8 @@ export function providerConfig(env: Env, p: OAuthProvider): ProviderConfig | nul
       authorize: 'https://accounts.google.com/o/oauth2/v2/auth',
       token: 'https://oauth2.googleapis.com/token',
       user: 'https://openidconnect.googleapis.com/v1/userinfo',
-      scope: 'openid profile',
+      // The address, never the name (§5.1): no `profile`.
+      scope: 'openid email',
     };
   }
   if (!env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET) return null;
@@ -1164,7 +1189,7 @@ export function providerConfig(env: Env, p: OAuthProvider): ProviderConfig | nul
     authorize: 'https://discord.com/oauth2/authorize',
     token: 'https://discord.com/api/v10/oauth2/token',
     user: 'https://discord.com/api/v10/users/@me',
-    scope: 'identify',
+    scope: 'identify email',
   };
 }
 
@@ -1199,6 +1224,12 @@ interface OAuthState {
    * account chooser and Discord's Authorize (prompt=consent). Absent (a state from before levels): 0.
    */
   lvl?: 1;
+  /** pend=1, the confirm sheet's "I already have one": an owned identity signs in and links the pending one; an unowned one joins it (p2). */
+  pend?: 1;
+  /** then=link:<p> on a re-authentication: the callback goes straight on to linking <p> (one round trip less, §3.9). */
+  then?: OAuthProvider;
+  /** A silent Discord sign-in (DISCORD_SILENT, prompt=none, level 0): a callback that needs consent starts once more with prompt=consent. */
+  sil?: 1;
   exp: number;
 }
 
@@ -1208,6 +1239,47 @@ const OAUTH_PROMPT: Readonly<Record<OAuthProvider, { prompt: string; lvl: 1 }>> 
   discord: { prompt: 'consent', lvl: 1 },
 };
 
+/**
+ * Var, optional (the sign-in design's §3.8 step 0): '1' asks Discord for prompt=none on a plain
+ * sign-in, which skips its Authorize screen for a returning player (level 0). Off until a developer
+ * has checked with a test Discord application what a never-authorized user sees then.
+ */
+type OAuthEnv = Env & { DISCORD_SILENT?: string };
+
+/** The provider's answers to a silent start that needed a person after all: the callback asks once more, with the press. */
+const SILENT_RETRY = new Set(['consent_required', 'interaction_required', 'login_required']);
+
+/** What a start asks for, apart from the PKCE pair and the nonce authorizeRedirect makes. */
+type StateFlags = Omit<OAuthState, 'typ' | 'p' | 'v' | 'n' | 'exp' | 'lvl'>;
+
+/**
+ * The redirect to the provider's authorize page, with a new state cookie (PKCE verifier, nonce,
+ * `flags`, the level its prompt proves). `silent`: Discord's prompt=none, level 0. `cookies`: set
+ * with it (a callback that chains a link sets the refresh cookie of its re-authentication too).
+ */
+async function authorizeRedirect(c: RouteContext, provider: OAuthProvider, cfg: ProviderConfig, flags: StateFlags, silent = false, cookies: readonly string[] = []): Promise<Response> {
+  const verifier = base64urlEncode(randomBytes(32));
+  const challenge = base64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(verifier))));
+  const nonce = base64urlEncode(randomBytes(16));
+  const asked = OAUTH_PROMPT[provider];
+  const state: OAuthState = { typ: 'oa', p: provider, v: verifier, n: nonce, ...flags, ...(silent ? { sil: 1 as const } : { lvl: asked.lvl }), exp: nowSeconds() + OAUTH_TTL_S };
+  const cookie = `${OAUTH_COOKIE}=${await signJwt(c.env.JWT_SECRET, state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${OAUTH_TTL_S}`;
+  const q = new URLSearchParams({
+    client_id: cfg.clientId,
+    redirect_uri: `${publicOrigin(c.env, c.request)}/api/auth/oauth/${provider}/callback`,
+    response_type: 'code',
+    scope: cfg.scope,
+    state: nonce,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  // Every start (a sign-in, a link, "confirm it's you") asks for a press on the provider's page:
+  // Discord's prompt=consent never lets an earlier authorization answer silently (level 1, not 0),
+  // unless DISCORD_SILENT asks for a silent sign-in (level 0, which every sensitive route refuses).
+  q.set('prompt', silent ? 'none' : asked.prompt);
+  return redirect(`${cfg.authorize}?${q.toString()}`, [...cookies, cookie]);
+}
+
 async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): Promise<Response> {
   const cfg = providerConfig(c.env, provider);
   if (!cfg) return error(404, 'provider_disabled');
@@ -1216,6 +1288,10 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
   let re: string | undefined;
   let dev: string | undefined;
   const mode = url.searchParams.get('link') === '1' ? 'link' : url.searchParams.get('reauth') === '1' ? 'reauth' : 'signin';
+  // The flags of §2.7, none a secret: pend=1 (a sign-in from the confirm sheet), then=link:<p> (after a re-authentication).
+  const pend = mode === 'signin' && url.searchParams.get('pend') === '1';
+  const thenOf = /^link:(google|discord)$/.exec(url.searchParams.get('then') ?? '');
+  const then = mode === 'reauth' && thenOf !== null && providerConfig(c.env, thenOf[1] as OAuthProvider) !== null ? (thenOf[1] as OAuthProvider) : undefined;
   if (mode !== 'signin') {
     // This browser's own signed-in device: never a TV's, and for a link one that just proved a
     // credential. Without one the start says so, it never turns into a sign-in or a sign-up.
@@ -1230,29 +1306,33 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
     else re = r.data.userId;
     dev = r.data.device;
   }
-  const verifier = base64urlEncode(randomBytes(32));
-  const challenge = base64urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(verifier))));
-  const nonce = base64urlEncode(randomBytes(16));
-  const asked = OAUTH_PROMPT[provider];
-  const state: OAuthState = { typ: 'oa', p: provider, v: verifier, n: nonce, link, ...(re !== undefined ? { re } : {}), ...(dev !== undefined ? { dev } : {}), lvl: asked.lvl, exp: nowSeconds() + OAUTH_TTL_S };
-  const cookie = `${OAUTH_COOKIE}=${await signJwt(c.env.JWT_SECRET, state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${OAUTH_TTL_S}`;
-  const q = new URLSearchParams({
-    client_id: cfg.clientId,
-    redirect_uri: `${publicOrigin(c.env, c.request)}/api/auth/oauth/${provider}/callback`,
-    response_type: 'code',
-    scope: cfg.scope,
-    state: nonce,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-  });
-  // Every start (a sign-in, a link, "confirm it's you") asks for a press on the provider's page:
-  // Discord's prompt=consent never lets an earlier authorization answer silently (level 1, not 0).
-  q.set('prompt', asked.prompt);
-  return redirect(`${cfg.authorize}?${q.toString()}`, [cookie]);
+  const silent = provider === 'discord' && mode === 'signin' && !pend && (c.env as OAuthEnv).DISCORD_SILENT === '1';
+  return authorizeRedirect(c, provider, cfg, { link, ...(re !== undefined ? { re } : {}), ...(dev !== undefined ? { dev } : {}), ...(pend ? { pend: 1 as const } : {}), ...(then !== undefined ? { then } : {}) }, silent);
 }
 
-/** Code -> provider identity { id, name } (token exchange + user endpoint). `fetchFn` for tests. */
-export async function oauthIdentity(cfg: ProviderConfig, provider: OAuthProvider, code: string, verifier: string, redirectUri: string, fetchFn: typeof fetch = fetch): Promise<{ id: string; name: string } | null> {
+/** A provider identity as the callback reads it (§2.7): the id, the address and how far the provider vouches for it. Never a name. */
+export interface ProviderIdentity extends ProviderEmail {
+  id: string;
+}
+
+/**
+ * The trust of a provider's address (§3.8), computed here from the provider's own answer and never
+ * taken from a client (I9). Discord's `verified` only says the address was confirmed once (it may
+ * have changed hands since): 'asserted' at most, a hint. Google is authoritative only for a Gmail
+ * address outside Workspace (`hd` absent): 'auth', which claims the canon; any other verified Google
+ * address is 'asserted'. In this build Google is read through its userinfo endpoint, and the claim
+ * comes with the Google change that reads its id_token (the design's PR 11): until then a Google
+ * address is 'asserted' too. An address that does not normalize is none.
+ */
+export function providerTrust(provider: OAuthProvider, u: { email?: unknown; verified?: unknown; email_verified?: unknown; hd?: unknown }): ProviderEmail {
+  const email = normalizeEmail(u.email);
+  const verified = provider === 'google' ? u.email_verified === true || u.email_verified === 'true' : u.verified === true;
+  if (email === null || !verified) return { email: null, trust: 'none' };
+  return { email, trust: 'asserted' };
+}
+
+/** Code -> provider identity { id, email, trust } (token exchange + user endpoint). `fetchFn` for tests. */
+export async function oauthIdentity(cfg: ProviderConfig, provider: OAuthProvider, code: string, verifier: string, redirectUri: string, fetchFn: typeof fetch = fetch): Promise<ProviderIdentity | null> {
   const form = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, code_verifier: verifier, client_id: cfg.clientId, client_secret: cfg.clientSecret });
   const tr = await fetchFn(cfg.token, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form });
   if (!tr.ok) {
@@ -1265,12 +1345,10 @@ export async function oauthIdentity(cfg: ProviderConfig, provider: OAuthProvider
   const ur = await fetchFn(cfg.user, { headers: { authorization: 'Bearer ' + tok.access_token, accept: 'application/json' } });
   if (!ur.ok) return null;
   const u = (await ur.json()) as Record<string, unknown>;
-  if (provider === 'google') {
-    if (typeof u.sub !== 'string') return null;
-    return { id: u.sub, name: typeof u.given_name === 'string' ? u.given_name : typeof u.name === 'string' ? u.name : 'Player' };
-  }
-  if (typeof u.id !== 'string') return null;
-  return { id: u.id, name: typeof u.global_name === 'string' && u.global_name ? u.global_name : typeof u.username === 'string' ? u.username : 'Player' };
+  // The id and the address only: no field of a name is read (given_name, name, global_name, username).
+  const id = provider === 'google' ? u.sub : u.id;
+  if (typeof id !== 'string' || id.length === 0 || id.length > 128) return null;
+  return { id, ...providerTrust(provider, u) };
 }
 
 /**
@@ -1282,30 +1360,190 @@ function oauthStateUnused(c: RouteContext, st: OAuthState): Promise<boolean> {
   return firstUse('oauth-state', st.n, OAUTH_TTL_S * 1000, new URL(c.request.url).origin);
 }
 
+/**
+ * The provider's redirect back (§3.8). A re-authentication moves this browser's proof to now (and
+ * with then=link:<p> goes straight on to linking <p>); a link adds the identity to the account; an
+ * identity an account owns signs in (and with pend=1 links the identity pending in this browser);
+ * an identity nobody owns creates NOTHING (I3): the pending cookie holds it, and /#auth=confirm
+ * asks "do you already have a Turbogol account?" (POST /api/auth/pending, /pending/create). With
+ * pend=1 an unowned identity of the other provider joins the pending one (p2); of the same
+ * provider it is /#auth=error:no_account, the cookie kept. Every redirect carries only #auth=…,
+ * and nothing of the provider's answers is logged.
+ */
 async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL): Promise<Response> {
   const fail = (code: string): Response => redirect('/#auth=error:' + code, [clearCookie(OAUTH_COOKIE, 'Lax')]);
   const cfg = providerConfig(c.env, provider);
   if (!cfg) return fail('provider_disabled');
-  if (url.searchParams.get('error')) return fail('cancelled');
   const raw = cookieOf(c.request, OAUTH_COOKIE);
   const st = raw ? await verifyJwt<OAuthState>(c.env.JWT_SECRET, raw) : null;
+  const ours = st !== null && st.typ === 'oa' && st.p === provider && st.n === url.searchParams.get('state');
+  const refused = url.searchParams.get('error');
+  if (refused) {
+    // A silent Discord sign-in that needed a person after all: once more, asking for the press.
+    if (ours && st.sil === 1 && SILENT_RETRY.has(refused) && (await oauthStateUnused(c, st))) return authorizeRedirect(c, provider, cfg, { link: null });
+    return fail('cancelled');
+  }
   const code = url.searchParams.get('code');
-  if (!st || st.typ !== 'oa' || st.p !== provider || st.n !== url.searchParams.get('state') || !code || code.length > 2048) return fail('bad_state');
+  if (!ours || !code || code.length > 2048) return fail('bad_state');
   if (!(await oauthStateUnused(c, st))) return fail('bad_state');
   const ident = await oauthIdentity(cfg, provider, code, st.v, `${publicOrigin(c.env, c.request)}/api/auth/oauth/${provider}/callback`);
   if (!ident) return fail('provider_error');
+  const found: ProviderEmail = { email: ident.email, trust: ident.trust };
   const refreshTok = newRefreshToken();
   const refresh = await grantFor(refreshTok, c.request);
-  // The level the start's prompt proves (R6); a state from before levels proves none.
+  // The level the start's prompt proves (R6); a state from before levels, or a silent one, proves none.
   const lvl = st.lvl === 1 ? 1 : 0;
   if (typeof st.re === 'string') {
     const r = await accountsJson<UserRef>(c.env, '/oauth-reauth', { provider, providerId: ident.id, userId: st.re, refresh, replace: st.dev, lvl });
     if (!r.ok) return fail(await codeOf(r.res, 'account_error'));
+    // then=link:<p>: this device just proved the account at level 1 (fresh(1), what a link needs),
+    // so the link's state is made here, for this browser's new token, instead of a start that reads
+    // the SameSite=Strict cookie (a redirect chain from the provider would not send it).
+    const next = st.then !== undefined ? providerConfig(c.env, st.then) : null;
+    if (st.then !== undefined && next !== null && lvl >= 1 && typeof refresh.family === 'string') return authorizeRedirect(c, st.then, next, { link: st.re, dev: refresh.family }, false, [refreshCookie(refreshTok)]);
     return redirect('/#auth=reauth', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
   }
-  const r = await accountsJson<UserRef & { created: boolean }>(c.env, '/oauth', { provider, providerId: ident.id, name: ident.name, linkTo: st.link, refresh, lvl, ...(st.link !== null ? { replace: st.dev } : {}) });
+  const pending = st.link === null && st.pend === 1 ? await readPending(c) : null;
+  const r = await accountsJson<UserRef & { pending?: true; linked?: OAuthProvider[]; linkError?: string }>(c.env, '/oauth', {
+    provider,
+    providerId: ident.id,
+    ...found,
+    linkTo: st.link,
+    refresh,
+    lvl,
+    ...(st.link !== null ? { replace: st.dev } : {}),
+    ...(pending !== null ? { pending: pendingBody(pending) } : {}),
+  });
   if (!r.ok) return fail(await codeOf(r.res, 'account_error'));
-  return redirect(r.data.created ? '/#auth=new' : st.link ? '/#auth=linked' : '/#auth=ok', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
+  if (r.data.pending === true) {
+    const mine: PendingIdent = { p: provider, id: ident.id, ...found };
+    if (pending === null) return redirect('/#auth=confirm', [clearCookie(OAUTH_COOKIE, 'Lax'), await pendingCookie(c.env, { ...mine, lvl })]);
+    // "I already have one", and that one has no account either: the same provider says so (the
+    // pending identity kept), the other one joins it and CREAR makes one account with both.
+    if (pending.p === provider) return fail('no_account');
+    return redirect('/#auth=confirm', [clearCookie(OAUTH_COOKIE, 'Lax'), await pendingCookie(c.env, { ...pending, p2: mine, lvl })]);
+  }
+  const cookies = [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)];
+  if (st.link !== null) return redirect('/#auth=linked', cookies);
+  if (pending === null) return redirect('/#auth=ok', cookies);
+  // Signed in either way (§3.8): the pending identity linked, or the reason it was not.
+  cookies.push(clearCookie(PENDING_COOKIE, 'Lax'));
+  return redirect(r.data.linkError !== undefined && /^[a-z_]{1,32}$/.test(r.data.linkError) ? '/#auth=ok:' + r.data.linkError : '/#auth=linked', cookies);
+}
+
+// ---- the confirm step: an identity nobody owns, held for this browser (§2.7, §3.8) -----------------
+
+const PENDING_COOKIE = '__Host-tg_pend';
+/** The pending identity's life: long enough to sign in to an old account, or to come back from the other provider. */
+export const PENDING_TTL_S = 30 * 60;
+
+/**
+ * The pending cookie's JWT (typ 'pend': never a session, a ticket or a state): the identity a
+ * provider proved in this browser that no account owns, its address and trust as the Worker read
+ * them (never a client), a second identity of the other provider (p2), and the callback's level.
+ * HttpOnly, in the person's own browser, 30 minutes at most.
+ */
+interface PendingClaims extends PendingIdentity {
+  typ: 'pend';
+  lvl: 0 | 1;
+  iat: number;
+  exp: number;
+}
+
+async function pendingCookie(env: Env, p: PendingIdentity & { lvl: 0 | 1 }): Promise<string> {
+  const iat = nowSeconds();
+  const claims: PendingClaims = { typ: 'pend', p: p.p, id: p.id, email: p.email, trust: p.trust, ...(p.p2 ? { p2: { p: p.p2.p, id: p.p2.id, email: p.p2.email, trust: p.p2.trust } } : {}), lvl: p.lvl, iat, exp: iat + PENDING_TTL_S };
+  return `${PENDING_COOKIE}=${await signJwt(env.JWT_SECRET, claims)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${PENDING_TTL_S}`;
+}
+
+const TRUSTS: readonly ProviderTrust[] = ['auth', 'asserted', 'none'];
+
+function pendIdentOf(v: unknown): PendingIdent | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  if (!OAUTH_PROVIDERS.includes(o.p as OAuthProvider) || typeof o.id !== 'string' || o.id.length === 0 || o.id.length > 128) return null;
+  if (!(o.email === null || typeof o.email === 'string') || !TRUSTS.includes(o.trust as ProviderTrust)) return null;
+  return { p: o.p as OAuthProvider, id: o.id, email: o.email as string | null, trust: o.trust as ProviderTrust };
+}
+
+/** This browser's pending identity (its cookie, signed and live), null without one. */
+async function readPending(c: Pick<RouteContext, 'env' | 'request'>): Promise<(PendingIdentity & { lvl: 0 | 1 }) | null> {
+  const raw = cookieOf(c.request, PENDING_COOKIE);
+  const v = raw ? await verifyJwt<PendingClaims>(c.env.JWT_SECRET, raw) : null;
+  if (v === null || v.typ !== 'pend') return null;
+  const first = pendIdentOf(v);
+  if (first === null) return null;
+  const p2 = pendIdentOf(v.p2);
+  return { ...first, ...(p2 !== null && p2.p !== first.p ? { p2 } : {}), lvl: v.lvl === 1 ? 1 : 0 };
+}
+
+/** The pending identity as AccountsDO takes it (accountStore.ts PendingIdentity). */
+function pendingBody(p: PendingIdentity): PendingIdentity {
+  return { p: p.p, id: p.id, email: p.email, trust: p.trust, ...(p.p2 ? { p2: p.p2 } : {}) };
+}
+
+/** 404 no_pending, the cookie cleared: the 30 minutes passed, or another tab used it. */
+function noPending(): Response {
+  return withCookies(error(404, 'no_pending', 'Ese inicio de sesión caducó: vuelve a entrar'), [clearCookie(PENDING_COOKIE, 'Lax')]);
+}
+
+/**
+ * POST /api/auth/pending {}: what the confirm sheet shows. The provider, its address when it gave
+ * a verified one, the trust, the second identity's provider, and the match: the account that
+ * address leads to (its name and ways in), looked up only for a verified address and shown only to
+ * whoever just proved a provider identity with that address (§7).
+ */
+async function pendingInfo(c: RouteContext): Promise<Response> {
+  const pend = await readPending(c);
+  if (pend === null) return noPending();
+  const r = await accountsJson<{ match: { name: string; methods: string[]; via: string; email: string } | null }>(c.env, '/pending-match', { pending: pendingBody(pend) });
+  if (!r.ok) return noStore(r.res);
+  return json({ provider: pend.p, email: pend.trust === 'none' ? null : pend.email, trust: pend.trust, second: pend.p2?.p ?? null, match: r.data.match }, 200, { 'cache-control': 'no-store' });
+}
+
+/** An IANA time zone this runtime knows ('' for none or another value): users.tz, for dates in mail. */
+function timeZoneOf(v: unknown): string {
+  if (typeof v !== 'string' || v.length === 0 || v.length > 64 || !/^[A-Za-z0-9_+\-/]+$/.test(v)) return '';
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: v });
+    return v;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * POST /api/auth/pending/create { username, news, lang, tz, turnstileToken }: the confirm sheet's
+ * CREAR. A solved check first (it restores the sign-up's anti-bot for OAuth), then the account with
+ * the name the player chose, never a provider's (§5.1). AccountsDO caps new accounts per network.
+ */
+async function pendingCreate(c: RouteContext): Promise<Response> {
+  const pend = await readPending(c);
+  if (pend === null) return noPending();
+  const b = await readJson<{ username?: unknown; news?: unknown; lang?: unknown; tz?: unknown; turnstileToken?: unknown }>(c.request);
+  if (!b) return error(400, 'bad_request');
+  const blocked = await c.antiBot(b.turnstileToken);
+  if (blocked !== null) return blocked;
+  const problem = usernameProblem(b.username);
+  if (problem !== null) return error(400, 'bad_username', problem);
+  const refreshTok = newRefreshToken();
+  const r = await accountsJson<UserRef>(c.env, '/pending-create', {
+    pending: pendingBody(pend),
+    username: b.username,
+    refresh: await grantFor(refreshTok, c.request),
+    ip: ipOf(c.request),
+    lvl: pend.lvl,
+    lang: b.lang === 'es' || b.lang === 'en' ? b.lang : '',
+    tz: timeZoneOf(b.tz),
+    news: b.news === true,
+  });
+  if (!r.ok) return noStore(r.res);
+  return withCookies(json(await accountSession(c.env, r.data)), [refreshCookie(refreshTok), clearCookie(PENDING_COOKIE, 'Lax')]);
+}
+
+/** POST /api/auth/pending/cancel {}: the confirm sheet's CANCELAR. */
+function pendingCancel(): Response {
+  return withCookies(json({ ok: true }), [clearCookie(PENDING_COOKIE, 'Lax')]);
 }
 
 /** An AccountsDO refusal's code for the /#auth=error: hash (only the ones the client words), else `fallback`. */
@@ -1450,6 +1688,9 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/tv/info') return tvInfo(c);
     if (p === '/api/auth/tv/confirm') return tvConfirm(c);
     if (p === '/api/auth/tv/poll') return tvPoll(c);
+    if (p === '/api/auth/pending') return pendingInfo(c);
+    if (p === '/api/auth/pending/create') return pendingCreate(c);
+    if (p === '/api/auth/pending/cancel') return pendingCancel();
     if (p === '/api/me/car') return carSet(c);
     if (p === '/api/me/shop/claim') return shopClaim(c);
     if (p === '/api/auth/sessions/revoke') return sessionRevoke(c);
