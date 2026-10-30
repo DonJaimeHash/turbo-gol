@@ -124,6 +124,13 @@ export interface Env {
   /** Var: the public origin the nodes and the installers reach the control plane at (https://turbo-gol.com). */
   NODES_PUBLIC_BASE?: string;
   /**
+   * Var and secret, optional: the zone id and an API token with only "Cache Purge" on it. With both,
+   * a maintainer's replay delist (nodeRoutes.ts) also purges the view's copies in every Cloudflare
+   * location; without them only the location the maintainer reaches, the others in 3 hours.
+   */
+  CF_ZONE_ID?: string;
+  CF_PURGE_TOKEN?: string;
+  /**
    * Workers Rate Limiting bindings (wrangler.jsonc `ratelimits`), named after their limit per 60 s:
    * the counters behind limits.ts's table, shared by the isolates of one Cloudflare location.
    * Optional: without them (tests, a fork) only the in-isolate counts apply.

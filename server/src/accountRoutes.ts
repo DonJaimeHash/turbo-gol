@@ -35,6 +35,8 @@
  *                             src/game/physicsRules.ts, MAX_PRESETS per account, one per request (a whole
  *                             list would overrun the 4 KB body), last write wins (the server's updatedAt);
  *                             30 writes and 60 reads a minute per account; a guest gets 403 account_required
+ *   GET  /api/me/replay-name  Bearer (account)                  -> { hidden }: PERFIL's "hide my name in public replays"
+ *   POST /api/me/replay-name  Bearer (account) { hidden }       -> { hidden } (default off); 30 a minute per account
  *   GET  /api/me/items        Bearer (account)                  -> ItemsAnswer { items, car, cars } (src/net/cosmetics.ts)
  *   POST /api/me/car          Bearer (account) { car }          -> AccountSession with that car (the default
  *                             car, or one the account owns: 409 not_owned; 400 bad_car): its next seats drive it
@@ -994,6 +996,21 @@ async function presetUpsert(c: RouteContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/presets/upsert', { userId: s.sub, preset }));
 }
 
+/**
+ * GET /api/me/replay-name, POST /api/me/replay-name { hidden }: PERFIL's "hide my name in public
+ * replays" (src/net/replays.ts; default off: the name shows). Limited per account by limits.ts
+ * (replayName), before AccountsDO. The public rows read it at each serve (the NodeRegistryDO keeps
+ * an answer a minute), the matches already listed too.
+ */
+async function replayName(c: RouteContext): Promise<Response> {
+  const s = requireAccount(c);
+  if (s instanceof Response) return s;
+  if (c.request.method === 'GET') return noStore(await accountsCall(c.env, '/replay-name?userId=' + encodeURIComponent(s.sub)));
+  const b = await readJson<{ hidden?: unknown }>(c.request);
+  if (!b || typeof b.hidden !== 'boolean') return error(400, 'bad_request');
+  return noStore(await accountsCall(c.env, '/replay-name/set', { userId: s.sub, hidden: b.hidden }));
+}
+
 /** POST /api/me/presets/delete { id }. */
 async function presetDelete(c: RouteContext): Promise<Response> {
   const s = requireAccount(c);
@@ -1446,6 +1463,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/me/experimental') return experimentalSet(c);
     if (p === '/api/me/presets') return presetUpsert(c);
     if (p === '/api/me/presets/delete') return presetDelete(c);
+    if (p === '/api/me/replay-name') return replayName(c);
     if (p === '/api/auth/tv/start') return tvStart(c);
     if (p === '/api/auth/tv/info') return tvInfo(c);
     if (p === '/api/auth/tv/confirm') return tvConfirm(c);
@@ -1460,6 +1478,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
   if (m === 'GET') {
     if (p === '/api/me') return me(c);
     if (p === '/api/me/experimental') return experimentalGet(c);
+    if (p === '/api/me/replay-name') return replayName(c);
     if (p === '/api/me/items') return itemsGet(c);
     if (p === '/api/me/shop') return shopGet(c);
     if (p === '/api/leaderboard') return leaderboard(c, url);

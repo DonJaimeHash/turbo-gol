@@ -71,6 +71,10 @@
  *   POST /experimental/set { userId, enabled }                       -> ExperimentalAnswer | 404
  *   POST /presets/upsert  { userId, preset }                         -> ExperimentalAnswer | 400 bad_preset | 409 too_many | 404
  *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
+ *   GET  /replay-name?userId=                                        -> { hidden } | 404 (PERFIL's "hide my name")
+ *   POST /replay-name/set { userId, hidden }                         -> { hidden } | 404
+ *   POST /replay-hidden   { ids, names } (the NodeRegistryDO)        -> { ids, names }: those of an account that hides
+ *                                                                     its name in the public replays (256 each at most)
  *   POST /tv-start        { ip, secret, where? }                     -> { code, expiresAt } | 503 busy (the table, or the
  *                                                                     caller's /48 or /24, is full)
  *   POST /tv-info         { code, userId, username, ip, phone? }     -> TvInfo (where the TV is, the phone's network and
@@ -139,6 +143,8 @@ import { ITEM_ID_RE } from '../../nodes/control-plane/shop';
 const LOGIN_WINDOW_MS = 15 * 60_000;
 /** The most accounts one /equipped asks for (a lobby's members: a 3v3). */
 const EQUIPPED_MAX = 6;
+/** /replay-hidden: a page of the public replays at most (31 rows of 8 seats), ids and names each. */
+const REPLAY_HIDDEN_MAX = 256;
 export const LOGIN_FAILS_FREE = 5;
 const LOGIN_LOCK_BASE_MS = 30_000;
 export const LOGIN_LOCK_MAX_MS = 15 * 60_000;
@@ -368,6 +374,10 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/shop': {
         const r = this.store.shop(p.get('userId') ?? '');
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/replay-name': {
+        const r = this.store.replayName(p.get('userId') ?? '');
         return r === 'no_user' ? error(404, 'no_user') : json(r);
       }
     }
@@ -709,6 +719,16 @@ export class AccountsDO extends DurableObject<Env> {
         const r = s.upsertPreset(b.userId, preset, now);
         if (r === 'too_many') return error(409, 'too_many');
         return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/replay-name/set': {
+        if (typeof b.userId !== 'string' || typeof b.hidden !== 'boolean') return error(400, 'bad_request');
+        const r = s.setReplayName(b.userId, b.hidden, now);
+        return r === 'no_user' ? error(404, 'no_user') : json(r);
+      }
+      case '/replay-hidden': {
+        const list = (v: unknown): v is string[] => Array.isArray(v) && v.length <= REPLAY_HIDDEN_MAX && v.every((x) => typeof x === 'string' && x.length <= 64);
+        if (!list(b.ids) || !list(b.names)) return error(400, 'bad_request');
+        return json(s.replayHidden(b.ids, b.names));
       }
       case '/presets/delete': {
         if (typeof b.userId !== 'string') return error(400, 'bad_request');

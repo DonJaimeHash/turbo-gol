@@ -38,6 +38,7 @@ import { finePointer } from '../device';
 import { icon } from '../components/icons';
 import type { IconName } from '../components/icons';
 import { slot } from '../components/tile';
+import { setRow, toggleSwitch } from '../components/rows';
 import { language, t } from '../../i18n';
 import type { Key } from '../../i18n';
 import { DISCORD_URL, GAME_NAME, SOURCE_URL } from '../../brand';
@@ -168,6 +169,9 @@ export function profileScreen(menu: Menu): Screen {
   let tab: GuestTab = 'login';
   /** The signed-in account's community nodes (GET /nodes/mine), by account. */
   let nodes: { who: string; list: MyNode[] } | null = null;
+  /** PRIVACIDAD's switch (GET /api/me/replay-name), by account: null until it is read; the switch on screen. */
+  let replayHidden: { who: string; hidden: boolean } | null = null;
+  let replaySwitch: { refresh(): void } | null = null;
   /** CUENTA Y SEGURIDAD unfolded. */
   let accountOpen = false;
   let sample: AccountData | null = null;
@@ -419,6 +423,32 @@ export function profileScreen(menu: Menu): Screen {
       icon('next', 'mn-prof-fold-chev'),
     );
     const server = v.nodes.length > 0 ? section(t('profile.myServer'), h('div.mn-prof-nodes', null, ...v.nodes.map(nodeView))) : null;
+    // PRIVACIDAD: the public replays show 'Jugador N' for this account (src/net/replays.ts), the
+    // matches already listed too. Off by default; a TV signed in with the phone may change it too.
+    const who = sample !== null ? 'sample' : (acc.account?.playerId ?? '');
+    const hideSwitch = toggleSwitch(
+      'profile-replay-name',
+      t('profile.hideReplayName'),
+      () => replayHidden !== null && replayHidden.who === who && replayHidden.hidden,
+      (on) => {
+        const was = replayHidden !== null && replayHidden.who === who && replayHidden.hidden;
+        replayHidden = { who, hidden: on };
+        if (sample !== null) return;
+        void acc.setReplayNameHidden(on).then(
+          (hidden) => {
+            if (replayHidden?.who === who) replayHidden = { who, hidden };
+            hideSwitch.refresh();
+          },
+          (e: unknown) => {
+            if (replayHidden?.who === who) replayHidden = { who, hidden: was };
+            hideSwitch.refresh();
+            menu.toast(errText(e), 'error');
+          },
+        );
+      },
+    );
+    replaySwitch = hideSwitch;
+    const privacy = section(t('profile.privacy'), setRow(t('profile.hideReplayName'), hideSwitch.el, t('profile.hideReplayNameHelp')));
     return h(
       'div.mn-prof-account',
       null,
@@ -427,6 +457,7 @@ export function profileScreen(menu: Menu): Screen {
         'div.mn-prof-col',
         null,
         h('section.mn-section.mn-prof-security', null, toggle, fold),
+        privacy,
         section(
           t('profile.community'),
           h('div.mn-prof-links', null, link(DISCORD_URL, 'friends', t('profile.discord'), 'profile-discord'), link(HOST_GUIDE(), 'server', t('profile.hostServer'), 'profile-host'), link(SOURCE_URL, 'code', t('profile.source'), 'profile-source')),
@@ -724,6 +755,19 @@ export function profileScreen(menu: Menu): Screen {
     );
   };
 
+  /** PRIVACIDAD's switch as the server has it, once per visit (offline: it reads NO until the next one). */
+  const loadReplayName = (): void => {
+    const who = acc.account?.playerId ?? null;
+    if (who === null) return;
+    void acc.replayNameHidden().then(
+      (hidden) => {
+        replayHidden = { who, hidden };
+        replaySwitch?.refresh();
+      },
+      () => undefined,
+    );
+  };
+
   // The samples exist in development and in a VITE_UI_FIT=1 build only (read here: node tests import this module).
   if (import.meta.env.DEV || import.meta.env.VITE_UI_FIT === '1') {
     (window as unknown as { __profile: (kind: 'account' | 'operator' | null) => void }).__profile = (kind) => {
@@ -745,7 +789,10 @@ export function profileScreen(menu: Menu): Screen {
     const signedIn = who !== shownFor && who !== null;
     if (el.isConnected) {
       render();
-      if (signedIn) loadNodes();
+      if (signedIn) {
+        loadNodes();
+        loadReplayName();
+      }
     }
   });
   return {
@@ -757,6 +804,7 @@ export function profileScreen(menu: Menu): Screen {
       if (acc.signedIn) {
         void acc.fetchMe().then(render, () => undefined);
         loadNodes();
+        loadReplayName();
       }
     },
   };

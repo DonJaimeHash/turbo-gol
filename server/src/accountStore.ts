@@ -31,6 +31,9 @@
  *   experimental     user -> Settings > Experimental's switch (src/game/experimentalStore.ts)
  *   presets          (user, preset) -> one physics preset: its name and canonical values as JSON
  *                    (src/game/physicsRules.ts), MAX_PRESETS per account, last write wins
+ *   replay_names     user -> PERFIL's "hide my name in public replays" (src/net/replays.ts): no row is
+ *                    the default, the name shown; the NodeRegistryDO asks (/replay-hidden) when it
+ *                    serves a replay row, so the choice reaches the matches listed before it too
  *
  * The hosts' shop (nodes/control-plane/shop.ts: its catalog and its claim rule, one source with the
  * reference server; nodes/docs/RECOMPENSAS.md: points come only from hosting a community node, are
@@ -402,6 +405,7 @@ export class AccountStore {
       PRIMARY KEY (user_id, item_id))`);
     s.exec('CREATE TABLE IF NOT EXISTS host_freeze (user_id TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, cleared_at INTEGER NOT NULL DEFAULT 0)');
     s.exec('CREATE TABLE IF NOT EXISTS loadout (user_id TEXT PRIMARY KEY, car TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+    s.exec('CREATE TABLE IF NOT EXISTS replay_names (user_id TEXT PRIMARY KEY, hidden INTEGER NOT NULL, updated_at INTEGER NOT NULL)');
     this.migrateTo2();
   }
 
@@ -1256,6 +1260,43 @@ export class AccountStore {
       this.sql.exec('DELETE FROM presets WHERE user_id = ? AND preset_id = ?', userId, presetId);
       return { enabled: this.experimentalEnabled(userId), presets: this.presets(userId) };
     });
+  }
+
+  // ---- public replays (src/net/replays.ts) --------------------------------------------------------
+
+  private replayNameHidden(userId: string): boolean {
+    return num(this.sql.exec('SELECT hidden FROM replay_names WHERE user_id = ?', userId).toArray()[0]?.hidden) === 1;
+  }
+
+  /** GET /api/me/replay-name: whether the account's name is hidden in the public replays (default: shown). */
+  replayName(userId: string): { hidden: boolean } | 'no_user' {
+    if (this.userById(userId) === null) return 'no_user';
+    return { hidden: this.replayNameHidden(userId) };
+  }
+
+  setReplayName(userId: string, hidden: boolean, now: number): { hidden: boolean } | 'no_user' {
+    return this.tx(() => {
+      if (this.userById(userId) === null) return 'no_user' as const;
+      this.sql.exec(
+        'INSERT INTO replay_names (user_id, hidden, updated_at) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET hidden = excluded.hidden, updated_at = excluded.updated_at',
+        userId, hidden ? 1 : 0, now,
+      );
+      return { hidden };
+    });
+  }
+
+  /**
+   * POST /replay-hidden (the NodeRegistryDO, serving replay rows): which of `ids` (player ids: an
+   * account's, or a guest's, which never has a row) and of `names` (a legacy row's names, looked up
+   * as usernames today) belong to an account that hides its name.
+   */
+  replayHidden(ids: readonly string[], names: readonly string[]): { ids: string[]; names: string[] } {
+    const hidIds = ids.filter((id) => this.replayNameHidden(id));
+    const hidNames = names.filter((n) => {
+      const u = this.userByKey(usernameKey(n));
+      return u !== null && this.replayNameHidden(str(u.id));
+    });
+    return { ids: hidIds, names: hidNames };
   }
 
   // ---- cars and the hosts' shop -------------------------------------------------------------------
