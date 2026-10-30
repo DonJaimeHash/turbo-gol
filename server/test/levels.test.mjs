@@ -531,3 +531,29 @@ test('levels: an unlink that leaves one way in needs level 2 where the account h
   assert.equal(claims(ls.json.session).aal, 1);
   assert.equal((await post(env, '/api/auth/unlink', { ip: ip(1), bearer: ls.json.session, body: { provider: 'google' } })).status, 200, 'its ceiling is 1');
 });
+
+// ---- the TV's /api/me (PR 3 review: the design's §3.11) ----------------------------------------
+
+test('a TV\'s /api/me leaves out the email and the hint; the phone\'s keeps them', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const ana = await legacyAccount(obj, 'Ana');
+  const phone = await login(env, { username: 'Ana', password: ana.v1, passwordV2: ana.v2 }, ip(0));
+  assert.equal(phone.status, 200);
+  // Then an address (from PR 7 on, proved by mail) and a provider's hint, written straight for the shape.
+  assert.equal(obj.store.claimEmail(ana.id, 'ana@example.org', 'mail', Date.now()), 'ok');
+  obj.store.sql.exec("UPDATE users SET email_hint = 'ana@discord.example' WHERE id = ?", ana.id);
+  const st = await post(env, '/api/auth/tv/start', { ip: ip(1) });
+  assert.equal((await post(env, '/api/auth/tv/confirm', { ip: ip(2), bearer: phone.json.session, body: { code: st.json.code } })).status, 200);
+  const tv = await post(env, '/api/auth/tv/poll', { ip: ip(1), body: { code: st.json.code, secret: st.json.secret } });
+  assert.equal(tv.json.tv, true);
+  assert.equal(claims(tv.json.session).aal, undefined, 'a TV is level 0');
+  const onTv = await req(env, 'GET', '/api/me', { ip: ip(1), bearer: tv.json.session });
+  assert.equal(onTv.status, 200);
+  assert.equal(onTv.headers.get('cache-control'), 'no-store');
+  assert.equal('email' in onTv.json || 'emailHint' in onTv.json, false, JSON.stringify(onTv.json));
+  assert.equal(JSON.stringify(onTv.json).includes('@'), false, 'no address at all');
+  assert.equal(onTv.json.name, 'Ana', 'the rest as before');
+  const onPhone = await req(env, 'GET', '/api/me', { ip: ip(0), bearer: phone.json.session });
+  assert.deepEqual([onPhone.json.email, onPhone.json.emailHint], ['ana@example.org', 'ana@discord.example']);
+});

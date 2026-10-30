@@ -1004,10 +1004,19 @@ export async function shopClaim(c: CosmeticContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/shop/claim', { userId: s.sub, item }));
 }
 
+/** MeInfo's fields a TV's session never gets (the design's §3.11): the account's address and a provider's. */
+const TV_HIDDEN = ['email', 'emailHint'] as const;
+
 async function me(c: RouteContext): Promise<Response> {
   const s = requireAccount(c);
   if (s instanceof Response) return s;
   const r = await accountsCall(c.env, '/me?userId=' + encodeURIComponent(s.sub));
+  if (s.tv === 1 && r.ok) {
+    // A TV plays as the account in a living room: its screen shows no address.
+    const info = (await r.json()) as Record<string, unknown>;
+    for (const k of TV_HIDDEN) delete info[k];
+    return json(info, 200, { 'cache-control': 'no-store' });
+  }
   const out = pass(r);
   out.headers.set('cache-control', 'no-store');
   return out;
