@@ -1837,7 +1837,7 @@ export default {
   'profile.replays': 'Replays',
   'replay.title': 'Replays',
   'replay.heading': 'REPLAYS',
-  'replay.intro': 'Matches played on the community servers in the last 30 days. A match shows up an hour after it ends, its time rounded to the hour.',
+  'replay.intro': 'Matches played on the community servers in the last 30 days. A match shows up one to two hours after it ends, together with the other matches of the same hour, its time rounded to the hour.',
   // A player who hides their name in public replays (PROFILE): {n} is their seat in the match, 1-6
   'replay.hiddenName': 'Player {n}',
   // Over the replay of a match no other server re-simulated (casual matches are checked by sample)

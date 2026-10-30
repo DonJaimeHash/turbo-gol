@@ -92,9 +92,9 @@ test('the viewer reads the view’s x-replay-verified and plays a local or dev f
 });
 
 test('the list says when a match shows up and that its time is rounded; names in the list and the player go through replayName', async () => {
-  assert.match(en['replay.intro'], /an hour after it ends/);
+  assert.match(en['replay.intro'], /one to two hours after it ends/);
   assert.match(en['replay.intro'], /rounded to the hour/);
-  assert.match(es['replay.intro'], /una hora después de terminar/);
+  assert.match(es['replay.intro'], /entre una y dos horas después de terminar/);
   for (const f of ['../src/replay/list.ts', '../src/replay/player.ts']) {
     const text = await src(f);
     assert.match(text, /replayName\(/, f);

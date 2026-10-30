@@ -138,7 +138,7 @@ const REPLAY_LIST_TTL_MS = 30_000;
 export const REPLAY_PAGE_EDGE_S = 300;
 /** A public replay's copies, in the edge cache and in browsers: a delist or a hidden name reaches every copy within this. */
 export const REPLAY_VIEW_MAX_AGE_S = 3 * 3600;
-/** A view the object does not serve (never listed, its first hour, expired, delisted): kept this long in the edge cache. */
+/** A view the object does not serve (never listed, its hour not released yet, expired, delisted): kept this long in the edge cache. */
 export const REPLAY_MISSING_S = 300;
 /** A listed replay that fails the public checks (junk a node stored), and a delisted one here: this long. */
 export const REPLAY_BROKEN_S = 86_400;
@@ -462,8 +462,8 @@ function viewKeys(c: NodeRouteContext, matchId: string): { view: string; missing
 
 /**
  * GET /nodes/replays[?before=<cursor>]: the public replay list (src/net/replays.ts), a page of the
- * object's index as the public sees it (NodeRegistryDO replays: settled an hour ago at least, the
- * time rounded to the hour, hidden names). The first page is kept REPLAY_LIST_TTL_MS by each
+ * object's index as the public sees it (NodeRegistryDO replays: whole settle hours, 1 to 2 hours
+ * after they settled, the time rounded to the hour, hidden names). The first page is kept REPLAY_LIST_TTL_MS by each
  * isolate; a later one needs a cursor this Worker signed (`next`, HMAC: the object is never asked
  * about a cursor anyone made up, which reads as the first page) and is kept REPLAY_PAGE_EDGE_S in
  * the location's edge cache, so the keys that can reach the object are as many as the rows. Only a
@@ -510,7 +510,7 @@ async function replayList(c: NodeRouteContext, env: NodesEnv): Promise<Response>
  * answer is kept REPLAY_VIEW_MAX_AGE_S in the location's edge cache (Cache API: a Worker's own
  * responses are not cached otherwise) and in browsers, so a match watched by many asks neither the
  * object nor R2 again, and a delist or a hidden name still reaches every copy within hours. A view
- * the object does not serve is remembered REPLAY_MISSING_S (random ids, a match in its first hour);
+ * the object does not serve is remembered REPLAY_MISSING_S (random ids, a match not released yet);
  * a listed one that fails the checks REPLAY_BROKEN_S, with an ALERT line: its up to 4 MiB are read,
  * hashed and walked once a day per location, not at every view. Only a request past both caches
  * counts against replayView and replaySite.

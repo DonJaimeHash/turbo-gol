@@ -1248,7 +1248,7 @@ export default {
   'profile.replays': 'Repeticiones',
   'replay.title': 'Repeticiones',
   'replay.heading': 'REPETICIONES',
-  'replay.intro': 'Partidas jugadas en los servidores comunitarios en los últimos 30 días. Cada partida aparece una hora después de terminar, con la hora redondeada.',
+  'replay.intro': 'Partidas jugadas en los servidores comunitarios en los últimos 30 días. Cada partida aparece entre una y dos horas después de terminar, junto con las demás de la misma hora, con la hora redondeada.',
   'replay.hiddenName': 'Jugador {n}',
   'replay.unverifiedNotice': 'Sin verificar: solo la avala el servidor comunitario que alojó la partida. Ningún otro servidor la revisó.',
   'replay.localNotice': 'Archivo local: no viene de este servidor y nadie lo revisó.',

@@ -1332,7 +1332,7 @@ export class NodeRegistryDO extends DurableObject<Env> {
   /**
    * POST /nodes/admin/delist { matchId, reason? }: one match out of the public replays at once (a
    * player's or a parent's request, a node's fabricated match): its replay_index row and seats, and
-   * its R2 object, whatever its age (in its first hour too, before anyone saw it). 404 no_replay
+   * its R2 object, whatever its age (before its hour is released too, before anyone saw it). 404 no_replay
    * when it is not in the index: a match not settled yet keeps its object (its verifier reads it).
    * The Worker then purges the view's edge copies (nodeRoutes.ts). An ALERT naming who did it,
    * every time.

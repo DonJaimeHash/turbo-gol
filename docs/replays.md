@@ -26,7 +26,7 @@ npx wrangler r2 bucket lifecycle list turbogol-node-replays
 
 | | Before | Now |
 |---|---|---|
-| List of matches | nobody | anyone, guests included, from an hour after each match: `GET /nodes/replays` |
+| List of matches | nobody | anyone, guests included, from one to two hours after each match (a whole hour's matches at once): `GET /nodes/replays` |
 | Replay bytes | the verifier node (signed request) | anyone: `GET /nodes/replays/<matchId>/view` (the signed verifier route is unchanged) |
 
 Only matches the control plane settled **without voiding them** are listed: rated matches (always
@@ -54,11 +54,17 @@ The security audit of #60 (pr60-1 to pr60-7, pr60-m1) and the owner's decisions 
   `Invitado NNNN`. While AccountsDO cannot answer, the list and the view answer 503 rather than a
   name someone hid. A change reaches the list within about a minute and the copies of a replay
   already watched within 3 hours (their cache life).
-- **No "who is playing now".** A match is listed, and viewable, only an hour after it settled, and
-  the list shows the hour (rounded down), never the minute. Within an hour the order is the match
-  id's, not the settle time's.
+- **No "who is playing now", and no exact times.** Matches are released by settle hour, a whole
+  hour at a time: every match that settled between H:00 and H:59 is listed, and viewable, from
+  H+2:00 on, all together (one to two hours after each ended), and they go together too, at H:00
+  thirty days later. The list shows the hour (rounded down), never the minute, and within an hour
+  the order is the match id's, not the settle time's. Polling the list (or a view) every few
+  seconds tells no more than that: when a row appears or goes is its hour's edge, not its own
+  settle time (`server/src/replayIndex.ts` replayServedSpan; a release at each row's own settle +
+  1 h gave anyone polling every 30 s every match's exact end, found in review).
 - **30 days, enforced in code.** Nothing settled more than 30 days ago is listed or viewed, whether
-  or not a prune ran; the cron (every 5 minutes) deletes those rows and their R2 objects.
+  or not a prune ran (an hour's matches go when its first minute turns 30 days old); the cron
+  (every 5 minutes) deletes those rows and their R2 objects.
 - **Delist on request.** `POST /nodes/admin/delist { matchId, reason? }`, a maintainer's route with
   the same gate as the others (a `NODE_TRUSTED_OPERATORS` account, not a TV's session, signed in or
   re-authenticated in the last 15 minutes): the row, its seats and its R2 object go, the view's
@@ -105,7 +111,7 @@ and a page is kept 5 minutes in the location's edge cache. A view is answered fr
 (Cache API, 3 hours) once someone watched that match; a miss asks the object for the indexed row
 and reads the bytes from R2 in the Worker, never through the object, at most 4 MiB (a real match is
 far smaller; anything bigger is junk a node stored). A view the object does not serve is remembered
-5 minutes at the edge (a random id, a match in its first hour), a listed one that fails the checks
+5 minutes at the edge (a random id, a match not released yet), a listed one that fails the checks
 a day, with an ALERT line in the Worker's log. Limits, counted across the location's isolates
 (`server/src/limits.ts`) and only on what reaches the object: 120 list pages and 120 views a minute
 per network, 600 per IPv6 /48 together.

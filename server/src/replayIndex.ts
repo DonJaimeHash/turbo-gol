@@ -12,9 +12,11 @@
  * (PERFIL; AccountsDO replay_names) become 'Jugador N' when a row is served (publicItem), so a
  * choice reaches the matches listed before it too.
  *
- * Privacy by time: a match is served an hour after it settled (REPLAY_LIST_DELAY_MS), its time
- * rounded down to the hour, and never after REPLAY_INDEX_DAYS: a list that refreshes every 30 s
- * would otherwise say who is playing right now.
+ * Privacy by time: matches are released by settle hour, a whole hour at a time, 1 to 2 hours after
+ * they settled (REPLAY_LIST_DELAY_MS, replayServedSpan), each with its time rounded down to the
+ * hour, and they go a whole hour at a time too, before REPLAY_INDEX_DAYS: a list that refreshes
+ * every 30 s would otherwise say who is playing right now, and a row that appeared (or went) on its
+ * own would give its exact settle time to anyone polling.
  */
 import type { MatchEntry, MatchOutcome } from '../../nodes/control-plane/controlPlane';
 import { hiddenNameOf } from '../../src/net/replays';
@@ -23,8 +25,23 @@ import type { ReplayListItem } from '../../src/net/replays';
 /** R2's lifecycle rule (docs/replays.md): a replay lives 30 days, its row the same; nothing older is served. */
 export const REPLAY_INDEX_DAYS = 30;
 export const HOUR_MS = 60 * 60_000;
-/** A settled match is served (listed, viewed) this long after it settled, not before. */
+/** A settled match is served (listed, viewed) at least this long after it settled, with the rest of its hour. */
 export const REPLAY_LIST_DELAY_MS = HOUR_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * The served window at `now`: a row is served when oldest <= at < newest. Both edges are whole
+ * hours, so the matches of one settle hour appear together and go together, and polling the list
+ * (or a view) says no more than the rounded `at` does. Every match of hour H appears at H + 2 h
+ * (1 to 2 hours after it settled; an edge at each row's settle + 1 h gave anyone polling every 30 s
+ * each match's exact end) and goes right after H + REPLAY_INDEX_DAYS (never served past 30 days).
+ */
+export function replayServedSpan(now: number): { newest: number; oldest: number } {
+  return {
+    newest: Math.floor((now - REPLAY_LIST_DELAY_MS) / HOUR_MS) * HOUR_MS,
+    oldest: Math.ceil((now - REPLAY_INDEX_DAYS * DAY_MS) / HOUR_MS) * HOUR_MS,
+  };
+}
 
 /** The row of a settled match, or null when it is not listed (void, no replay, or a replay too big to serve). */
 export function replayIndexItem(m: MatchEntry, o: MatchOutcome): ReplayListItem | null {

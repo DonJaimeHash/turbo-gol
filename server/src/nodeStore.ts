@@ -21,7 +21,8 @@
  *   replay_index  the public replay list (replayIndex.ts): one row per settled, not voided match
  *                 with a replay, written with the match it settles; kept as long as R2 keeps replays
  *                 (REPLAY_INDEX_DAYS: pruned with their R2 objects by the cron's health call) and
- *                 served only from an hour after its settle time (REPLAY_LIST_DELAY_MS) until then
+ *                 served by whole settle hours (replayServedSpan): the matches of hour H from H + 2 h,
+ *                 1 to 2 hours after each settled, until H + 30 days
  *   replay_players each listed match's human seats and their player ids (replayIndex.ts replaySeats),
  *                 never served: whose name a served row hides ('Jugador N', AccountsDO replay_names).
  *                 A row listed before this table has no seats (a legacy row): its names are looked up
@@ -40,7 +41,7 @@ import type { NodeRecord, TokenRecord } from '../../nodes/control-plane/registry
 import type { SqlLike } from './accountStore';
 import { outcomeCalls } from './nodeOutcome';
 import type { OutcomeCall } from './nodeOutcome';
-import { HOUR_MS, REPLAY_INDEX_DAYS, REPLAY_LIST_DELAY_MS, replayIndexItem, replaySeats } from './replayIndex';
+import { HOUR_MS, REPLAY_INDEX_DAYS, replayIndexItem, replayServedSpan, replaySeats } from './replayIndex';
 import type { ReplayIndexRow, ReplaySeat } from './replayIndex';
 import type { ReplayListItem } from '../../src/net/replays';
 
@@ -270,12 +271,13 @@ export class NodeStore implements RegistryStore, MatchStore {
   }
 
   /**
-   * The served rows (settled between REPLAY_INDEX_DAYS and REPLAY_LIST_DELAY_MS ago) in the public
-   * order, after `cursor` (null: from the newest), at most `limit`, each with its seats.
+   * The served rows (replayServedSpan: whole settle hours, released 1 to 2 hours after they settled,
+   * gone before 30 days) in the public order, after `cursor` (null: from the newest), at most
+   * `limit`, each with its seats.
    */
   replayList(cursor: ReplayCursor | null, limit: number): ReplayRow[] {
-    const now = this.now();
-    const span = [now - REPLAY_LIST_DELAY_MS, now - REPLAY_INDEX_DAYS * DAY_MS];
+    const { newest, oldest } = replayServedSpan(this.now());
+    const span = [newest, oldest];
     // `+at`: the time window is a filter, never the index, so SQLite walks replay_index_hour in order and
     // stops at `limit` (with replay_index_at it sorted the whole window: 0.1 ms against 300 ms for
     // 300,000 rows). The cursor's hour is the index's range; a row-value or an OR form would scan from the top.
@@ -303,11 +305,11 @@ export class NodeStore implements RegistryStore, MatchStore {
     return out;
   }
 
-  /** One served match (in replayList's time window), its replay's SHA-256 and its seats, or null. */
+  /** One served match (in replayList's window, replayServedSpan), its replay's SHA-256 and its seats, or null. */
   replayEntry(matchId: string): (ReplayIndexRow & { seats: ReplaySeat[] | null }) | null {
-    const now = this.now();
+    const { newest, oldest } = replayServedSpan(this.now());
     const r = this.sql
-      .exec<{ sha: string; data: string }>('SELECT sha, data FROM replay_index WHERE match_id = ? AND at < ? AND at >= ?', matchId, now - REPLAY_LIST_DELAY_MS, now - REPLAY_INDEX_DAYS * DAY_MS)
+      .exec<{ sha: string; data: string }>('SELECT sha, data FROM replay_index WHERE match_id = ? AND at < ? AND at >= ?', matchId, newest, oldest)
       .toArray()[0];
     return r ? { item: JSON.parse(r.data) as ReplayListItem, sha: r.sha, seats: this.seatsOf([matchId]).get(matchId) ?? null } : null;
   }

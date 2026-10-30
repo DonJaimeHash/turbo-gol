@@ -706,7 +706,7 @@ const ACCOUNT_B = 'b2b2b2b2b2b2b2b2';
 const hex64 = (c) => c.repeat(64);
 const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
-/** Half past an hour that ended 2 to 3 hours ago: served (past the first hour), with half an hour on each side in the same hour. */
+/** Half past an hour that ended 2 to 3 hours ago: served (its hour released), with half an hour on each side in the same hour. */
 const BASE = Math.floor((Date.now() - 3 * HOUR) / HOUR) * HOUR + HOUR / 2;
 const hourOf = (t) => Math.floor(t / HOUR) * HOUR;
 
@@ -920,20 +920,38 @@ test('replay index: rated and unrated matches are listed with the control planeâ
   );
 });
 
-test('replay index: a match is served an hour after it settled and never past 30 days, prune or not; the cron prunes', () => {
-  let now = Date.now();
+test('replay index: a whole settle hour at a time: its matches appear together at its hour + 2 h and go together before 30 days, so polling gives no settle time; the cron prunes', () => {
+  // The review's attacker: poll every 30 s (the first page's cache life) and note when each row
+  // first appears and last shows. Two matches of one hour, settled at :07:13 and :41:52.
+  const H = Math.floor(Date.now() / HOUR) * HOUR - 40 * DAY;
+  const settles = { a: H + 7 * 60_000 + 13_000, b: H + 41 * 60_000 + 52_000 };
+  let now = H;
   const store = memStore(() => now);
-  store.finished(settled(hex64('a'), { doneAt: now - 30 * 60_000 }), rated(hex64('a')));
-  store.finished(settled(hex64('b'), { doneAt: now - 61 * 60_000 }), rated(hex64('b')));
-  assert.deepEqual(store.replayList(null, 30).map((r) => r.item.matchId[0]), ['b'], 'its first hour: not listed');
-  assert.equal(store.replayEntry(hex64('a')), null, 'nor viewable');
-  assert.ok(store.replayEntry(hex64('b')));
-  now += 31 * 60_000;
-  assert.deepEqual(store.replayList(null, 30).map((r) => r.item.matchId[0]).sort(), ['a', 'b']);
-  now += 30 * DAY;
-  assert.deepEqual(store.replayList(null, 30), [], 'past 30 days: not listed');
-  assert.equal(store.replayEntry(hex64('b')), null, 'nor viewable, though no prune ran');
-  assert.deepEqual(store.pruneReplays(now).sort(), [hex64('a'), hex64('b')]);
+  for (const [c, at] of Object.entries(settles)) store.finished(settled(hex64(c), { doneAt: at }), rated(hex64(c)));
+  const listed = () => store.replayList(null, 30).map((r) => r.item.matchId[0]).sort().join('');
+  const viewable = () => ['a', 'b'].filter((c) => store.replayEntry(hex64(c)) !== null).join('');
+  const seen = (from, to) => {
+    const out = [];
+    for (now = from; now <= to; now += 30_000) {
+      const l = listed();
+      assert.equal(viewable(), l, `the view follows the list at ${now - H} ms`);
+      if (out.length === 0 || out[out.length - 1][1] !== l) out.push([now - H, l]);
+    }
+    return out;
+  };
+  assert.deepEqual(seen(H, H + 3 * HOUR), [
+    [0, ''],
+    [2 * HOUR, 'ab'],
+  ], 'nothing for 2 h, then both on the same poll: 1 h 18 min 8 s and 1 h 52 min 47 s after they settled, never at their own settle + 1 h');
+  assert.ok(2 * HOUR - (settles.b - H) >= HOUR, 'at least an hour late');
+  assert.deepEqual(seen(H + 30 * DAY - HOUR, H + 30 * DAY + HOUR), [
+    [30 * DAY - HOUR, 'ab'],
+    [30 * DAY + 30_000, ''],
+  ], 'both go on the same poll, at their hour + 30 days: neither is ever served past 30 days');
+  now = H + 30 * DAY + 10 * 60_000;
+  assert.deepEqual(store.pruneReplays(now), [hex64('a')], 'the prune takes only what is past 30 days, long gone from the list');
+  now = H + 31 * DAY;
+  assert.deepEqual(store.pruneReplays(now), [hex64('b')]);
   assert.deepEqual(store.pruneReplays(now), []);
 });
 
@@ -1047,7 +1065,7 @@ test('GET /nodes/replays: only matches settled an hour ago, each at its hour (ne
   assert.equal(res.headers.get('x-robots-tag'), 'noindex');
   const page = await jsonOf(res);
   assert.equal(page.matches.length, 30);
-  assert.ok(!page.matches.some((m) => m.matchId === hex64('f')), 'a match in its first hour is not listed');
+  assert.ok(!page.matches.some((m) => m.matchId === hex64('f')), 'a match of the last hours, its hour not released, is not listed');
   assert.deepEqual(new Set(page.matches.map((m) => m.at)), new Set([hourOf(BASE)]), 'the hour, never the minute');
   assert.deepEqual(
     page.matches.map((m) => m.matchId),
@@ -1196,7 +1214,7 @@ test('GET /nodes/replays/<id>/view: the public bytes of a served match, x-replay
   );
   assert.equal((await req(env, 'GET', `/nodes/replays/${casual}/view`)).headers.get('x-replay-verified'), '0', 'an unsampled casual match: the nodeâ€™s word');
   const early = await req(env, 'GET', `/nodes/replays/${recent}/view`);
-  assert.equal(early.status, 404, 'its first hour: not viewable');
+  assert.equal(early.status, 404, 'its hour not released: not viewable');
   assert.equal(early.headers.get('x-robots-tag'), 'noindex');
   assert.equal((await req(env, 'GET', `/nodes/replays/${swapped}/view`)).status, 404, 'the R2 object is not the uploaded one');
   assert.equal((await req(env, 'GET', `/nodes/replays/${gone}/view`)).status, 404, 'expired from R2');
