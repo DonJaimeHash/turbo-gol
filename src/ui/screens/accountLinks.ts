@@ -111,7 +111,7 @@ function namePrefill(menu: Menu): string {
  * and its repeat where the keypad shows dots. `check` resolves the password or null after showing
  * what is wrong.
  */
-export function newPasswordFields(email: string, label: string, withUser = true): { nodes: HTMLElement[]; pass: Field; check: () => string | null } {
+export function newPasswordFields(email: string, label: string, withUser = true): { nodes: HTMLElement[]; pass: Field; inputs: HTMLInputElement[]; check: () => string | null } {
   const user = withUser ? passwordManagerUser(email) : null;
   const repeat = keypadTyping();
   const pass = field(label, { type: 'password', autocomplete: 'new-password', maxLength: 128, enterkeyhint: repeat ? 'next' : 'go', reveal: !repeat });
@@ -124,7 +124,25 @@ export function newPasswordFields(email: string, label: string, withUser = true)
     }
     return pass.input.value;
   };
-  return { nodes: [...(user !== null ? [user] : []), pass.el, ...(again !== null ? [again.el] : [])], pass, check };
+  return { nodes: [...(user !== null ? [user] : []), pass.el, ...(again !== null ? [again.el] : [])], pass, inputs: [pass.input, ...(again !== null ? [again.input] : [])], check };
+}
+
+/**
+ * Enter on a sheet's fields (a keyboard's Enter, a phone keyboard's Siguiente / Ir, as each one's
+ * enterkeyhint says): the next field, and on the last one the sheet's primary action, pressed as
+ * its own button (busy once: the sheet disables it while it runs, and closes on its answer). Not
+ * the Enter / OK that starts editing a field reached with the arrows (Menu.onFieldKey cancels it).
+ */
+export function sheetEnter(inputs: readonly HTMLInputElement[]): void {
+  inputs.forEach((input, i) =>
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.defaultPrevented) return;
+      e.preventDefault();
+      const next = inputs[i + 1];
+      if (next !== undefined) next.focus();
+      else input.closest('.mn-sheet')?.querySelector<HTMLButtonElement>('.mn-sheet-actions .mn-btn-primary')?.click();
+    }),
+  );
 }
 
 /**
@@ -155,7 +173,7 @@ export interface FinishHooks {
  * manager, the password, the news switch at NO. `create` sends signup/finish: a refused name puts
  * the server's free `suggest` in the field. Resolves true once signed in.
  */
-export function signupFinishFields(menu: Menu, email: string, hooks: FinishHooks): { nodes: HTMLElement[]; name: Field; create: () => Promise<boolean> } {
+export function signupFinishFields(menu: Menu, email: string, hooks: FinishHooks): { nodes: HTMLElement[]; name: Field; inputs: HTMLInputElement[]; create: () => Promise<boolean> } {
   const acc = menu.host.accounts;
   const name = field(t('auth.signupName'), { autocomplete: 'nickname', maxLength: USERNAME_MAX, value: namePrefill(menu), hint: t('auth.signupNameHint'), enterkeyhint: 'next' });
   const pw = newPasswordFields(email, t('profile.password'));
@@ -195,7 +213,8 @@ export function signupFinishFields(menu: Menu, email: string, hooks: FinishHooks
       return false;
     }
   };
-  return { nodes: [name.el, ...pw.nodes, setRow(t('auth.signupNews'), newsSwitch.el)], name, create };
+  // `inputs`: the name, then the password (and its repeat), for Enter's next field and its submit.
+  return { nodes: [name.el, ...pw.nodes, setRow(t('auth.signupNews'), newsSwitch.el)], name, inputs: [name.input, ...pw.inputs], create };
 }
 
 /** Welcome, signed in (§3.1 step 6): the toast and the account's profile; PERFIL itself is never opened for it. */
@@ -355,9 +374,10 @@ export function resetSheet(menu: Menu, token: string, who: ResetPeekAnswer): voi
     // Closed (CANCELAR, Back, a sheet over it): the next page load does not bring it back; the mail's link still works.
     onClose: () => acc.keepPendingLink(null),
   });
+  sheetEnter(pw.inputs);
 }
 
-// ---- the sign-up's link (§3.1 step 5) ------------------------------------------------------------------
+// ---- the sign-up's link (§3.1 step 5)------------------------------------------------------------------
 
 /** The proof is dead or its account exists: the sheet that says so, and where to go. */
 function deadSignupSheet(menu: Menu, e: AccountError): void {
@@ -418,6 +438,7 @@ export function verifySheet(menu: Menu, token: string, email: string): void {
     // Closed (CANCELAR, Back, a sheet over it): the next page load does not bring it back; the mail's link still works.
     onClose: () => acc.keepPendingLink(null),
   });
+  sheetEnter(fields.inputs);
 }
 
 // ---- "confirm it's you" by a code to the account's mailbox (§3.9, PR 7's reauth/code) ------------------------

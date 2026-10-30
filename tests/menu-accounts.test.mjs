@@ -735,16 +735,58 @@ class FakeEl {
   }
   appendChild(c) {
     this.children.push(c);
+    if (c instanceof FakeEl) c.parentNode = this;
     return c;
   }
   addEventListener(type, fn) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(fn);
   }
-  dispatch(type) {
-    const e = { type, target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  dispatch(type, init = {}) {
+    const e = { type, target: this, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...init };
     for (const fn of this.listeners.get(type) ?? []) fn(e);
     return e;
+  }
+  /** A button's click() (none while disabled, as a browser's), an input's focus() (document.activeElement). */
+  click() {
+    if (this.disabled !== true) this.dispatch('click');
+  }
+  focus() {
+    globalThis.document.activeElement = this;
+  }
+  /** One compound of classes and a tag ('button.mn-btn-primary', '.mn-sheet'). */
+  is(compound) {
+    const [tag, ...classes] = compound.split('.');
+    return (tag === '' || this.tagName === tag.toUpperCase()) && classes.every((c) => this.classList.contains(c));
+  }
+  closest(sel) {
+    for (let e = this; e; e = e.parentNode) if (e.is(sel)) return e;
+    return null;
+  }
+  /** Descendant selectors of compounds ('.mn-sheet-actions .mn-btn-primary'). */
+  querySelector(sel) {
+    const parts = sel.trim().split(/\s+/);
+    const last = parts.pop();
+    const within = (e) => {
+      const up = [];
+      for (let a = e.parentNode; a; a = a === this ? null : a.parentNode) up.push(a);
+      return up;
+    };
+    return (
+      this.all()
+        .slice(1)
+        .find((e) => {
+          if (!e.is(last)) return false;
+          const up = within(e);
+          let at = 0;
+          for (let i = parts.length - 1; i >= 0; i--) {
+            while (at < up.length && !up[at].is(parts[i])) at++;
+            if (at === up.length) return false;
+            at++;
+          }
+          return true;
+        }) ?? null
+    );
   }
   set textContent(v) {
     this.text = String(v);
@@ -972,4 +1014,109 @@ test("a pad or a remote is never put on a field by script: after CONTINUAR the c
   assert.match(fnOf(PROFILE, 'lastButton'), /if \(touch\(\) \|\| finePointer\(\)\) identity\.focus\(\);\s*else menu\.openKeypad\(identity\);/, '"continue as · email" with a pad: its keypad');
   // Every other script focus in PERFIL: a keyboard's own Enter (onEnter's next field), or one of the guarded ones above.
   for (const line of PROFILE.split('\n').filter((l) => /\.focus\(\)/.test(l))) assert.match(line, /typesHere\(\)|^\s*next\.focus\(\);|^\s*if \(touch\(\) \|\| finePointer\(\)\) identity\.focus\(\);/, line.trim());
+});
+
+const SHEET = await import('../src/ui/components/sheet.ts');
+
+/** A Menu for accountLinks' sheets: modal() mounts the real sheet (components/sheet.ts), toast() records. */
+function sheetMenu(accounts, oauth = ['discord']) {
+  const m = { cfg: { oauth }, sheet: null, closed: 0, toasts: [], host: { accounts, guestName: () => 'Guest4821' } };
+  m.toast = (text, kind) => m.toasts.push([kind, text]);
+  m.modal = (spec) => {
+    const close = () => {
+      m.closed++;
+      m.sheet = null;
+      spec.onClose?.();
+    };
+    m.sheet = SHEET.sheetBox(spec, close);
+    return close;
+  };
+  m.refocus = () => undefined;
+  return m;
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+const enter = (input) => input.dispatch('keydown', { key: 'Enter' });
+
+test("Enter in the verify link's sheet: the name, then the password, then CREAR CUENTA, once (a phone keyboard's Siguiente / Ir)", async () => {
+  const L = await linksModule();
+  await withDom(async () => {
+    let finishes = 0;
+    let answer = null;
+    const acc = {
+      account: null,
+      signedIn: false,
+      keepPendingLink: () => undefined,
+      fetchMe: async () => undefined,
+      signupFinish: (proof, f) => {
+        finishes++;
+        assert.deepEqual(proof, { token: 'T'.repeat(43) });
+        assert.equal(f.password, 'una clave bastante larga');
+        return new Promise((r) => (answer = () => r(SESSION(f.username, Date.now() + 3_600_000))));
+      },
+    };
+    const menu = sheetMenu(acc);
+    L.verifySheet(menu, 'T'.repeat(43), 'ana@example.com');
+    const inputs = menu.sheet.all().filter((e) => e.tagName === 'INPUT');
+    const name = inputs.find((e) => e.autocomplete === 'nickname');
+    const pass = inputs.find((e) => e.autocomplete === 'new-password');
+    assert.equal(name.enterKeyHint, 'next');
+    assert.equal(pass.enterKeyHint, 'go');
+    pass.value = 'una clave bastante larga';
+    const e1 = enter(name);
+    assert.equal(e1.defaultPrevented, true);
+    assert.equal(globalThis.document.activeElement, pass, 'Siguiente: the password');
+    assert.equal(finishes, 0);
+    enter(pass);
+    assert.equal(finishes, 1, 'Ir: CREAR CUENTA');
+    enter(pass);
+    assert.equal(finishes, 1, 'a second Enter while it runs is the same press (the sheet disabled its button)');
+    answer();
+    await settle();
+    assert.equal(menu.closed, 1, 'signed in: the sheet closes');
+    assert.match(menu.toasts.at(-1)[1], /^Welcome, Player\d{4}!$/);
+    // An Enter the menus took (OK on a field in navigation mode starts editing) is no submit.
+    L.verifySheet(menu, 'T'.repeat(43), 'ana@example.com');
+    const again = menu.sheet.all().find((e) => e.tagName === 'INPUT' && e.autocomplete === 'new-password');
+    again.dispatch('keydown', { key: 'Enter', defaultPrevented: true });
+    assert.equal(finishes, 1);
+  });
+});
+
+test("Enter in the reset link's sheet: the password, its repeat where the keypad shows dots, then GUARDAR Y ENTRAR, once", async () => {
+  const L = await linksModule();
+  await withDom(async () => {
+    const win = globalThis.window;
+    // No fine pointer and no finger (a TV, a phone's pad): the keypad's dots, so a repeat field.
+    globalThis.window = { matchMedia: () => ({ matches: false }) };
+    try {
+      const resets = [];
+      const acc = { account: null, keepPendingLink: () => undefined, fetchMe: async () => undefined, resetPassword: async (token, password) => void resets.push([token, password]) };
+      const menu = sheetMenu(acc);
+      L.resetSheet(menu, 'R'.repeat(43), { name: 'Ana', email: 'ana@example.com', hasPassword: true });
+      const [pass, repeat] = menu.sheet.all().filter((e) => e.tagName === 'INPUT' && e.autocomplete === 'new-password');
+      assert.ok(repeat, 'the repeat field');
+      assert.deepEqual([pass.enterKeyHint, repeat.enterKeyHint], ['next', 'go']);
+      pass.value = repeat.value = 'otra clave bastante larga';
+      enter(pass);
+      assert.equal(globalThis.document.activeElement, repeat);
+      assert.equal(resets.length, 0);
+      enter(repeat);
+      enter(repeat);
+      await settle();
+      assert.deepEqual(resets, [['R'.repeat(43), 'otra clave bastante larga']], 'saved once');
+      assert.equal(menu.closed, 1);
+    } finally {
+      globalThis.window = win;
+    }
+  });
+});
+
+test("Enter on PERFIL's code step and in CAMBIAR CONTRASEÑA: the fields in order, the last one submits as its button does", () => {
+  const code = fnOf(PROFILE, 'signupCodeForm');
+  assert.match(code, /const submit = \(\): void => void busyWhile\(create, async \(\) => void \(await fields\.create\(\)\)\);\s*const create = primary\(t\('profile\.createAccount'\), submit,/);
+  assert.match(code, /onEnter\(fields\.inputs, submit\);/, 'the name, the password (its repeat), then CREAR CUENTA');
+  assert.match(fnOf(LINKS, 'signupFinishFields'), /inputs: \[name\.input, \.\.\.pw\.inputs\]/);
+  assert.match(fnOf(PROFILE, 'passwordDialog'), /sheetEnter\(\[old\.input, \.\.\.pw\.inputs\]\);/);
+  assert.match(fnOf(LINKS, 'verifySheet'), /sheetEnter\(fields\.inputs\);/);
+  assert.match(fnOf(LINKS, 'resetSheet'), /sheetEnter\(pw\.inputs\);/);
 });

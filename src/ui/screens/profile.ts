@@ -44,7 +44,7 @@ import { REGIONS, USERNAME_MAX, emailTypo, normalizeEmail, passwordIssue, userna
 import type { AccountIssue, DeviceSession, MeInfo, MyNode, OAuthProvider, PlaylistRating } from '../../net/account';
 import { signInRoute } from '../../net/emailAuth';
 import type { StoredAttempt } from '../../net/emailAuth';
-import { authErrText, emailProviders, googleHidden, keypadTyping, mailOffText, newPasswordFields, openForgotSheet, openReauthCodeSheet, passwordManagerUser, providersLine, signupFinishFields, welcome } from './accountLinks';
+import { authErrText, emailProviders, googleHidden, keypadTyping, mailOffText, newPasswordFields, openForgotSheet, openReauthCodeSheet, passwordManagerUser, providersLine, sheetEnter, signupFinishFields, welcome } from './accountLinks';
 import { PROTOCOL_VERSION } from '../../net/protocol';
 import { PROBATION_MATCHES } from '../../../nodes/control-plane/registry';
 import { ratingCard, rankBadge, tierById } from '../badges';
@@ -453,7 +453,10 @@ export function profileScreen(menu: Menu): Screen {
         createErr.textContent = msg ?? '';
       },
     });
-    const create = primary(t('profile.createAccount'), () => void busyWhile(create, async () => void (await fields.create())), { 'data-key': 'profile-create', 'aria-disabled': 'true' });
+    const submit = (): void => void busyWhile(create, async () => void (await fields.create()));
+    const create = primary(t('profile.createAccount'), submit, { 'data-key': 'profile-create', 'aria-disabled': 'true' });
+    // Enter (a phone keyboard's Siguiente / Ir): the name, the password (its repeat), then CREAR CUENTA.
+    onEnter(fields.inputs, submit);
     // REENVIAR: disabled (the arrows skip it) until its minute is over, then once more per press.
     let readyAt = a.resendAt;
     let resendsLeft = 3;
@@ -891,7 +894,7 @@ export function profileScreen(menu: Menu): Screen {
   const passwordDialog = (): void => {
     const who = acc.me?.email ?? acc.account?.name ?? '';
     const reveal = !keypadTyping();
-    const old = field(t('profile.currentPassword'), { type: 'password', autocomplete: 'current-password', maxLength: 128, reveal });
+    const old = field(t('profile.currentPassword'), { type: 'password', autocomplete: 'current-password', maxLength: 128, enterkeyhint: 'next', reveal });
     const pw = newPasswordFields(who, t('profile.newPassword'), false);
     menu.modal({
       title: t('profile.changePasswordTitle'),
@@ -924,6 +927,7 @@ export function profileScreen(menu: Menu): Screen {
         { label: t('profile.cancel'), onClick: () => true },
       ],
     });
+    sheetEnter([old.input, ...pw.inputs]);
   };
 
   /**
