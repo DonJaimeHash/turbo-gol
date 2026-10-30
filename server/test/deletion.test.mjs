@@ -49,7 +49,7 @@ globalThis.fetch = async (url, init) => {
   throw new Error('BLOCKED network call in a test: ' + u);
 };
 
-const { AccountsDO, PURGE_BATCH, PURGE_AGAIN_MS } = await import('../src/AccountsDO.ts');
+const { AccountsDO, PURGE_BATCH, PURGE_AGAIN_MS, DELETION_REQUESTS } = await import('../src/AccountsDO.ts');
 const A = await import('../src/accountRoutes.ts');
 const ACC = await import('../../src/net/account.ts');
 const AUTH = await import('../src/auth.ts');
@@ -314,6 +314,48 @@ test('deletion: DELETE_GRACE (env.ts deleteGraceMs) takes whole days from 1 to 6
   const a = await signedInAccount(env, obj, 'Ana', 'ana@example.com', ip(0));
   const r = await del(env, a.session, 'Ana', ip(0));
   assert.ok(Math.abs(r.json.purgeAt - (Date.now() + 3 * DAY)) < 5_000);
+});
+
+test("deletion: M9 counts in the account's own caps (§2.16: 5 notices a day, 10 /api/me/* mails), taken before anything changes; a loop of requests and cancels with one Bearer stops at the 6th, and the day's notice lane stays for everyone else", async () => {
+  const { env, obj, outbox } = makeEnv({ EMAIL_DAILY_CAP: '20' });
+  const ip = ips();
+  const a = await signedInAccount(env, obj, 'Ciclo', 'ciclo@example.com', ip(0));
+  const window = async (kind, id) => obj.store.mailWindows([await obj.throttleKey(kind, id)]).get(await obj.throttleKey(kind, id))?.day_n ?? 0;
+  // A refusal before the caps (the name typed wrong) takes none of them. (7 requests in all: below authAcct's 10 a minute.)
+  assert.equal((await del(env, a.session, 'Otro', ip(0))).json.error, 'bad_confirm');
+  for (let i = 0; i < 5; i++) {
+    const r = await del(env, a.session, 'Ciclo', ip(0));
+    assert.equal(r.status, 200, `request ${i + 1}: ${JSON.stringify(r.json)}`);
+    const c = await post(env, '/api/auth/delete/cancel', { ip: ip(0), body: { token: linkIn(outbox.at(-1), 'keep') } });
+    assert.equal(c.status, 200, JSON.stringify(c.json));
+  }
+  assert.deepEqual([await window('nt', a.id), await window('ma', a.id), await window('dq', a.id)], [5, 5, 5], 'each request took one slot of each cap, the refusals none');
+  const sixth = await del(env, a.session, 'Ciclo', ip(0));
+  assert.deepEqual([sixth.status, sixth.json.error], [429, 'email_rate_limited'], JSON.stringify(sixth.json));
+  assert.ok(sixth.json.retryAfterMs > 23 * 3_600_000, 'until its 24 hours end');
+  assert.equal(row(obj, a.id).delete_purge_at, 0, 'not pending: nothing changed');
+  assert.equal(count(obj, "SELECT COUNT(*) AS n FROM consents WHERE user_id = ? AND source = 'deletion'", a.id), 5, 'no sixth consent row');
+  assert.equal(outbox.length, 5, 'five M9, no sixth');
+  assert.equal(sql(obj, "SELECT sent FROM mail_day WHERE lane = 'notice'")[0].sent, 5, 'the notice lane counted five');
+  // The lane (20 a day here) still has room for another player's sign-up code and reset.
+  const st = await post(env, '/api/auth/signup/start', { ip: ip(3), body: { email: 'nuevo@example.com', lang: 'es', ...TOK } });
+  assert.equal(st.status, 200, JSON.stringify(st.json));
+  // Another account whose /api/me/* mail is spent for the day (10): its request waits, nothing changes.
+  const b = await signedInAccount(env, obj, 'Bea', 'bea@example.com', ip(1));
+  obj.store.mailWindowsWrite(new Map([[await obj.throttleKey('ma', b.id), { hour_at: Date.now(), hour_n: 0, day_at: Date.now(), day_n: 10 }]]));
+  const full = await del(env, b.session, 'Bea', ip(1));
+  assert.deepEqual([full.status, full.json.error], [429, 'email_rate_limited']);
+  assert.equal(row(obj, b.id).delete_purge_at, 0);
+  assert.equal(await window('nt', b.id), 0, 'a refusal counts nothing');
+  // An account without an address sends no M9: DELETION_REQUESTS (5 a day) still bounds its requests.
+  assert.deepEqual(DELETION_REQUESTS, { day: 5 });
+  const d = await account(obj, 'Dora', { pw: false, discord: 'd-dora-caps' });
+  const ds = await refresh(env, (await oauth(env, 'discord', 'd-dora-caps', { ip: ip(2) })).rt, ip(2));
+  obj.store.mailWindowsWrite(new Map([[await obj.throttleKey('dq', d), { hour_at: Date.now(), hour_n: 0, day_at: Date.now(), day_n: 5 }]]));
+  const dq = await del(env, ds.json.session, 'Dora', ip(2));
+  assert.deepEqual([dq.status, dq.json.error], [429, 'rate_limited']);
+  assert.equal(row(obj, d).delete_purge_at, 0);
+  assert.equal(outbox.length, 5 + 1, 'only the sign-up code went since');
 });
 
 // ---- while it is pending: the ways back (§2.10, §3.13 step 2) --------------------------------------------

@@ -457,6 +457,12 @@ export const PURGE_BATCH = 25;
 export const PURGE_AGAIN_MS = 60_000;
 /** The NodeRegistryDO's answer to /operator-deleted, at most this long (an unanswered id is told again next run). */
 export const NODES_TELL_TIMEOUT_MS = 5_000;
+/**
+ * Deletion requests of one account in 24 hours, with an address or without one (key 'dq'): each
+ * writes a consent row and signs every device out. With an address, M9's own caps (the account's
+ * notices, 5 a day, and its /api/me/* mail, 10) bind first.
+ */
+export const DELETION_REQUESTS: WindowCap = { day: 5 };
 
 /** 409 deletion_pending { purgeAt } (§2.10): only ever after the account was proved (a password, a provider, a mailbox). */
 function deletionPending(purgeAt: number, extra: Record<string, unknown> = {}): Response {
@@ -1098,15 +1104,23 @@ export class AccountsDO extends DurableObject<Env> {
    * POST /me-delete { userId, confirm, level, mailOff?, lang? } -> { purgeAt, mail } (§2.10): the
    * refusals of accountStore.ts deletionBlock first (nothing written); then, for an account with a
    * verified address, M9 must be able to go (mail on, room in the day's notice lane: else 503 / 429
-   * and nothing changes, as an email change waits for its undo link); then the request in one
-   * transaction (requestDeletion: the purge DELETE_GRACE ahead, every device signed out, the news
-   * withdrawn, the cancel row), and M9 with its cancel link, in both languages, never skipped.
+   * and nothing changes, as an email change waits for its undo link); then the account's own caps
+   * (§2.16: its security notices, 5 a day, and the mail its /api/me/* routes start, 10 a day, with an
+   * address; DELETION_REQUESTS always), taken in this step or 429 and nothing changes, so a loop of
+   * requests and M9 cancels never drains the day's notice lane for every other player; then the
+   * request in one transaction (requestDeletion: the purge DELETE_GRACE ahead, every device signed
+   * out, the news withdrawn, the cancel row), and M9 with its cancel link, in both languages, never
+   * skipped (its caps were taken here).
    */
   private async meDelete(b: Record<string, unknown>, now: number): Promise<Response> {
     if (typeof b.userId !== 'string' || b.userId.length > 64) return error(400, 'bad_request');
     const level = b.level === 1 || b.level === 2 ? b.level : 0;
     const cancel = await this.newReset();
-    const nt = await this.noticeKey(b.userId);
+    const mailCaps: Array<{ key: string; cap: WindowCap; code: 'email_rate_limited' | 'rate_limited' }> = [
+      { key: await this.noticeKey(b.userId), cap: MAIL_CAPS.notice, code: 'email_rate_limited' },
+      { key: await this.throttleKey('ma', b.userId), cap: MAIL_CAPS.account, code: 'email_rate_limited' },
+    ];
+    const requests = { key: await this.throttleKey('dq', b.userId), cap: DELETION_REQUESTS, code: 'rate_limited' as const };
     // ---- one step from here ----
     const s = this.store;
     const blocked = s.deletionBlock(b.userId, b.confirm, level);
@@ -1117,9 +1131,13 @@ export class AccountsDO extends DurableObject<Env> {
       const lane = this.laneRefusal('notice', now);
       if (lane !== null) return lane;
     }
+    // deletionBlock said yes in this same step, so requestDeletion below does too: these slots always pay for a request.
+    const capped = this.takeCaps(p.email !== null ? [...mailCaps, requests] : [requests], now);
+    if (capped !== null) return capped;
     const r = s.requestDeletion(b.userId, b.confirm, level, now, deleteGraceMs(this.env), p.email !== null ? { nonce: cancel.nonce, hash: cancel.hash } : null);
     if (typeof r === 'string' || 'level' in r) return deletionRefused(r, s.deletionAt(b.userId));
-    const mail = p.email !== null ? this.notice(p, nt, { kind: 'deletion_scheduled', name: p.name, at: r.purgeAt, token: cancel.token }, b.lang, now, true) : null;
+    // `must` with no key: the lane had room above and the account's notice cap was taken with the others.
+    const mail = p.email !== null ? this.notice(p, null, { kind: 'deletion_scheduled', name: p.name, at: r.purgeAt, token: cancel.token }, b.lang, now, true) : null;
     return json({ purgeAt: r.purgeAt, mail });
   }
 
@@ -1359,7 +1377,8 @@ export class AccountsDO extends DurableObject<Env> {
    * both languages), within the account's own cap of notices a day and the lane's share; null when
    * either is full (the change stands, the notice is skipped) or the account has no address. `must`
    * (M6 and M12, whose change applied only once noticeRoom saw room for them in the lane): never
-   * skipped, and counted in the account's cap while it has room.
+   * skipped, and counted in the account's cap while it has room (`key` null: M9, whose request
+   * took that cap itself before anything changed, meDelete).
    */
   private async noticeKey(userId: string): Promise<string> {
     return this.throttleKey('nt', userId);
