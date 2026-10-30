@@ -963,3 +963,13 @@ test("email_rate_limited (spec §4.7): a full sign-up lane claims no earlier mai
   assert.equal(ES['auth.mailCapProviders'], 'Ahora no podemos enviar más correos. Inténtalo más tarde o entra con {providers}.');
   assert.equal(ES['auth.mailCap'], 'Ahora no podemos enviar más correos. Inténtalo más tarde.');
 });
+
+test("a pad or a remote is never put on a field by script: after CONTINUAR the code is reached with the arrows (navigation mode: A opens the digits keypad)", () => {
+  // FocusNav (nav.ts install): a focus that is no arrow's puts a field in editing mode, where A opens no keypad (Menu.action).
+  assert.match(PROFILE, /const typesHere = \(\): boolean => !touch\(\) && finePointer\(\);/, "pickTab's rule: a fine pointer, untouched");
+  assert.match(fnOf(PROFILE, 'signupEmailForm'), /if \(typesHere\(\)\) body\.querySelector<HTMLElement>\('\.mn-code-input'\)\?\.focus\(\);/, 'CONTINUAR: the code field only for a fine pointer');
+  assert.match(fnOf(PROFILE, 'signupCodeForm'), /if \(typesHere\(\)\) code\.input\.focus\(\);\s*else menu\.refocus\(\);/, "REENVIAR's minute: the menus' refocus for a pad");
+  assert.match(fnOf(PROFILE, 'lastButton'), /if \(touch\(\) \|\| finePointer\(\)\) identity\.focus\(\);\s*else menu\.openKeypad\(identity\);/, '"continue as · email" with a pad: its keypad');
+  // Every other script focus in PERFIL: a keyboard's own Enter (onEnter's next field), or one of the guarded ones above.
+  for (const line of PROFILE.split('\n').filter((l) => /\.focus\(\)/.test(l))) assert.match(line, /typesHere\(\)|^\s*next\.focus\(\);|^\s*if \(touch\(\) \|\| finePointer\(\)\) identity\.focus\(\);/, line.trim());
+});

@@ -192,6 +192,13 @@ export function profileScreen(menu: Menu): Screen {
   const body = h('div.mn-profile-body');
   const touch = (): boolean => document.documentElement.classList.contains('tg-touch');
   const tv = (): boolean => document.documentElement.classList.contains('tg-tv');
+  /**
+   * A field focused by script after a press (CONTINUAR, "continue as") arrives in editing mode: a
+   * pad's A then opens no keypad, and without a fine pointer a system keyboard could pop up. Only a
+   * fine pointer, untouched, gets that focus (pickTab's rule); a pad or a remote reaches the field
+   * with the arrows (navigation mode), where A opens mn-keypad.
+   */
+  const typesHere = (): boolean => !touch() && finePointer();
   let tab: GuestTab = 'login';
   /** The signed-in account's community nodes (GET /nodes/mine), by account. */
   let nodes: { who: string; list: MyNode[] } | null = null;
@@ -259,7 +266,12 @@ export function profileScreen(menu: Menu): Screen {
     const provider = last.method === 'email' ? null : last.method;
     if (provider !== null && !emailProviders(menu).includes(provider)) return null;
     const method = provider !== null ? PROVIDER_NAMES[provider] : t('auth.methodEmail');
-    return secondary(t('auth.continueAs', { name: last.name, method }), () => (provider !== null ? goProvider(provider) : identity.focus()), { 'data-key': 'profile-continue' });
+    // Email: the field, to type in (a finger's tap or a fine pointer), or its keypad (a pad's A, a remote's OK).
+    const typeIdentity = (): void => {
+      if (touch() || finePointer()) identity.focus();
+      else menu.openKeypad(identity);
+    };
+    return secondary(t('auth.continueAs', { name: last.name, method }), () => (provider !== null ? goProvider(provider) : typeIdentity()), { 'data-key': 'profile-continue' });
   };
 
   /** Usernames no longer sign in (the cutoff, sign-in PR 9): what to do instead, and the providers when there are some. */
@@ -365,7 +377,8 @@ export function profileScreen(menu: Menu): Screen {
       step = 'code';
       typed = false;
       render();
-      if (!touch()) body.querySelector<HTMLElement>('.mn-code-input')?.focus();
+      // A pad or a remote: render's refocus (the tab above, ▼ to the code in navigation mode).
+      if (typesHere()) body.querySelector<HTMLElement>('.mn-code-input')?.focus();
     };
     const btn = primary(t('auth.continue'), () => void busyWhile(btn, go), { 'data-key': 'profile-go' });
     onEnter([email.input], () => void busyWhile(btn, go));
@@ -454,8 +467,12 @@ export function profileScreen(menu: Menu): Screen {
       const wasFocused = document.activeElement === resend;
       resend.disabled = left > 0;
       resend.hidden = resendsLeft <= 0;
-      // A press that started the next minute: the focus goes to the code, never to nothing.
-      if (wasFocused && (resend.disabled || resend.hidden) && !touch()) code.input.focus();
+      // A press that started the next minute: the focus goes to the code (a pad or a remote: the
+      // menus' own refocus, no field), never to nothing.
+      if (wasFocused && (resend.disabled || resend.hidden) && !touch()) {
+        if (typesHere()) code.input.focus();
+        else menu.refocus();
+      }
       if (waited && left <= 0) live.textContent = t('auth.resendReady');
       waited = left > 0;
     };
@@ -577,7 +594,7 @@ export function profileScreen(menu: Menu): Screen {
     tab = id;
     typed = false;
     render();
-    if (!touch() && finePointer()) body.querySelector<HTMLElement>('.mn-form .mn-input:not([readonly])')?.focus();
+    if (typesHere()) body.querySelector<HTMLElement>('.mn-form .mn-input:not([readonly])')?.focus();
   };
 
   /** The server's name for this guest, temporary (a new guest session brings a new one). */
