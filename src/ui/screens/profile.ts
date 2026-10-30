@@ -3,6 +3,8 @@
  *
  * An account: the identity tile (badge of your best rank, name, since when and how you sign in,
  * abandons), TEMPORADA (a tile per playlist: rank in words, MMR or the placement left, the record),
+ * PRIVACIDAD (hide the name in public replays; with a verified address, "News by email", the news
+ * consent, off unless the account opted in: sign-in PR 13),
  * MI SERVIDOR for a community node operator (GET /nodes/mine: each node, its state in words, its
  * region, the matches it hosted, its version), CUENTA Y SEGURIDAD folded (a disclosure: rename,
  * the password (CAMBIAR with the current one; CREAR by a link to the account's own mailbox, or "add
@@ -149,6 +151,15 @@ export function unlinkKeepsMaintainer(me: MeInfo): boolean {
   return me.maintainer === undefined || (me.maintainer.password && me.maintainer.waysIn - 1 >= 2);
 }
 
+/**
+ * PRIVACIDAD's "News by email" switch shows (§3.14 step 2): an account with a verified address (news
+ * only ever goes to one, and the server refuses a grant without it), no deletion pending, and not a
+ * TV signed in with the phone (POST /api/me/consent takes a full session; a TV's /api/me has no address).
+ */
+export function newsSwitchShown(me: MeInfo | null, tv: boolean): boolean {
+  return !tv && me !== null && me.emailVerified === true && typeof me.email === 'string' && me.email.length > 0 && !((me.deletionAt ?? 0) > 0);
+}
+
 /** 'email, Google': how the account signs in (translated): its password by its address, or by its username of before. */
 function providerList(me: MeInfo): string {
   return me.providers.map((p) => (p === 'password' ? t(me.emailVerified === true ? 'profile.providerEmail' : 'profile.providerUsername') : PROVIDER_NAMES[p])).join(', ');
@@ -228,6 +239,9 @@ export function profileScreen(menu: Menu): Screen {
   /** PRIVACIDAD's switch (GET /api/me/replay-name), by account: null until it is read; the switch on screen. */
   let replayHidden: { who: string; hidden: boolean } | null = null;
   let replaySwitch: { refresh(): void } | null = null;
+  /** PRIVACIDAD's news switch as pressed, by account, until the server's answer to the newest press (newsSeq) settles it. */
+  let newsChoice: { who: string; on: boolean } | null = null;
+  let newsSeq = 0;
   /** CUENTA Y SEGURIDAD unfolded. */
   let accountOpen = false;
   let sample: AccountData | null = null;
@@ -817,7 +831,31 @@ export function profileScreen(menu: Menu): Screen {
       },
     );
     replaySwitch = hideSwitch;
-    const privacy = section(t('profile.privacy'), setRow(t('profile.hideReplayName'), hideSwitch.el, t('profile.hideReplayNameHelp')));
+    // NOVEDADES POR CORREO (§3.14 step 2): the news consent, only with a verified address (a grant
+    // without one is refused: email_required) and never on a TV (a full Bearer's). Off unless the
+    // account's newest news row is a grant (/api/me `news`); a press shows at once, the server's
+    // answer settles it (POST /api/me/consent), a refusal puts it back and says why.
+    const newsMe = (): MeInfo | null => (sample !== null ? sample.me : acc.me);
+    const newsSwitch = toggleSwitch(
+      'profile-news',
+      t('profile.news'),
+      () => (newsChoice !== null && newsChoice.who === who ? newsChoice.on : newsMe()?.news === true),
+      (on) => {
+        const seq = ++newsSeq;
+        newsChoice = { who, on };
+        if (sample !== null) return;
+        const settle = (): void => {
+          if (seq === newsSeq) newsChoice = null;
+          newsSwitch.refresh();
+        };
+        void acc.setNews(on).then(settle, (e: unknown) => {
+          settle();
+          menu.toast(errText(e), 'error');
+        });
+      },
+    );
+    const newsRow = newsSwitchShown(me, tvScope) ? setRow(t('profile.news'), newsSwitch.el, t('profile.newsHelp')) : null;
+    const privacy = section(t('profile.privacy'), setRow(t('profile.hideReplayName'), hideSwitch.el, t('profile.hideReplayNameHelp')), newsRow);
     return h(
       'div.mn-prof-account',
       null,

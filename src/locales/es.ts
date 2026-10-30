@@ -458,6 +458,8 @@ export default {
   'profile.privacy': 'PRIVACIDAD',
   'profile.hideReplayName': 'Ocultar mi nombre en repeticiones públicas',
   'profile.hideReplayNameHelp': 'Apareces como «Jugador N» en la lista y en las repeticiones de tus partidas en servidores comunitarios, también en las que ya están. Una copia que alguien abrió antes conserva tu nombre hasta 3 horas.',
+  'profile.news': 'Novedades por correo',
+  'profile.newsHelp': 'Solo noticias de Turbogol, nunca de terceros. Puedes darte de baja cuando quieras.',
   'profile.community': 'COMUNIDAD',
   'profile.discord': 'Discord (en inglés)',
   'profile.hostServer': 'Pon un servidor',
@@ -658,6 +660,10 @@ export default {
   'auth.undoDoneTitle': 'Cuenta recuperada',
   'auth.undoDone': 'Tu cuenta volvió a {email}. Cerramos la sesión en todos los dispositivos.',
   'auth.forgotPendingNote': 'Después de guardar la contraseña nueva, vuelve a entrar con {provider}: te pedimos entrar con tu cuenta y la vinculamos.',
+  'auth.unsubTitle': 'Novedades por correo',
+  'auth.unsubNote': '¿Quieres dejar de recibir novedades de Turbogol por correo? Tu cuenta no cambia.',
+  'auth.unsubConfirm': 'DARME DE BAJA',
+  'auth.unsubDone': 'Listo: ya no te enviamos novedades.',
 
   // Username and password problems by issue code (src/net/account.ts codes, shown by src/ui/screens/profile.ts)
   'account.issue.usernameMissing': 'Elige un nombre de usuario',
