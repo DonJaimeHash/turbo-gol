@@ -47,11 +47,11 @@
  * After a create the game never opens PERFIL: the arbiter's next step comes. The flow resolves
  * 'created', 'signedIn' or 'closed' (a provider button leaves the page instead).
  */
-import { h } from '../dom';
+import { h, navButton } from '../dom';
 import { AccountError, oauthErrorText } from '../../net/AccountClient';
 import type { CodeProof, PendingInfo } from '../../net/AccountClient';
 import { USERNAME_MAX, normalizeEmail, usernameIssue } from '../../net/account';
-import type { AccountSession, OAuthProvider, ResetPeekAnswer } from '../../net/account';
+import type { AccountSession, MeInfo, OAuthProvider, ResetPeekAnswer, UndoPeekAnswer } from '../../net/account';
 import { guestNumber } from '../../net/guestName';
 import { inAppBrowser, isAccountPath, parseAccountLink, providersText, signInRoute, signupNamePrefill } from '../../net/emailAuth';
 import type { AccountLink, LegacyPhase } from '../../net/emailAuth';
@@ -507,6 +507,293 @@ export async function openReauthCodeSheet(menu: Menu, then: () => void): Promise
 }
 
 
+// ---- adding and changing the email (sign-in PR 9: the design's §3.6, §3.10) ---------------------------------
+
+/** What an email sheet needs from where it was opened (PERFIL's rows and banner, the grace sheet). */
+export interface EmailHooks {
+  /** The account had a verified address: a change (its toast says the other devices were signed out). */
+  change: boolean;
+  /** The server asks this browser to confirm it is them at `level` first (PERFIL's fresh), then the sheet again. */
+  reauth: (level: 1 | 2) => void;
+}
+
+/** The day of the cutoff in the page's language ("15 de enero de 2027", "15 January 2027"): it falls at 12:00 UTC, the same day in the Americas and Spain. */
+export function cutoffDay(ms: number): string {
+  try {
+    return new Date(ms).toLocaleDateString(language(), { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch {
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * ENVIAR CÓDIGO for the address in `email` (POST /api/me/email), as a sheet's primary action: the
+ * code sheet next. A refusal that needs "confirm it's you" hands over to `hooks.reauth`; any other
+ * shows under the field. Busy once: the sheet disables its button while it runs.
+ */
+function sendCodeAction(menu: Menu, email: Field, hooks: EmailHooks): () => Promise<boolean> {
+  return async () => {
+    email.error(null);
+    const address = normalizeEmail(email.input.value);
+    if (address === null) {
+      email.error(t('error.account.bad_email'));
+      return false;
+    }
+    const err = await startEmailCode(menu, address, hooks);
+    if (err === null) return true;
+    email.error(err);
+    return false;
+  };
+}
+
+/**
+ * POST /api/me/email for `address`, then its code sheet: null once it went (or handed over to
+ * "confirm it's you"), else the refusal's text. PERFIL's banner sends a hint's address with no sheet
+ * before it (its ENVIAR CÓDIGO).
+ */
+export async function startEmailCode(menu: Menu, address: string, hooks: EmailHooks): Promise<string | null> {
+  try {
+    const start = await menu.host.accounts.emailStart(address);
+    queueMicrotask(() => emailCodeSheet(menu, start, hooks));
+    return null;
+  } catch (e) {
+    if (e instanceof AccountError && e.code === 'reauth_required') {
+      queueMicrotask(() => hooks.reauth(e.level === 2 ? 2 : 1));
+      return null;
+    }
+    return authErrText(menu, e);
+  }
+}
+
+/**
+ * AGREGAR, CAMBIAR or CONFIRMAR on PERFIL's Correo row (§3.6 step 3): the new address (`prefill`: the
+ * hint for CONFIRMAR), what is mailed, ENVIAR CÓDIGO; then the code sheet. The session is already
+ * fresh enough (PERFIL's fresh), or the server says which level it wants (`hooks.reauth`).
+ */
+export function emailSheet(menu: Menu, title: string, prefill: string, hooks: EmailHooks): void {
+  const email = field(t('auth.emailNew'), { type: 'email', autocomplete: 'email', maxLength: 254, value: prefill, inputmode: 'email', keypad: 'email', enterkeyhint: 'go' });
+  email.input.setAttribute('data-autofocus', '');
+  menu.modal({
+    title,
+    body: [h('p.mn-note', null, hooks.change ? t('auth.emailChangeNote') : t('auth.emailAddNote')), email.el],
+    actions: [
+      { label: t('auth.sendCode'), primary: true, onClick: sendCodeAction(menu, email, hooks) },
+      { label: t('profile.cancel'), onClick: () => true },
+    ],
+  });
+  sheetEnter([email.input]);
+}
+
+/**
+ * The code of an add or a change (§3.6 step 4, §3.7): "We sent a code to {email}", the code field (it
+ * checks itself at the sixth digit), PEDIR OTRO when it is dead, REENVIAR after its minute (3 per
+ * attempt), "use another email", and the note that a mail to an address another account holds says
+ * what to do. Done: the toast (a change says the other devices were signed out; an add, how the
+ * account signs in now) and the account's profile again.
+ */
+export function emailCodeSheet(menu: Menu, start: { attempt: string; resendAt: number; to: string }, hooks: EmailHooks): void {
+  const acc = menu.host.accounts;
+  let attempt = start.attempt;
+  let readyAt = start.resendAt;
+  let resendsLeft = 3;
+  let close = (): void => undefined;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const live = h('p.mn-prof-live', { 'aria-live': 'polite' });
+  const done = (me: MeInfo): void => {
+    const email = typeof me.email === 'string' ? me.email : start.to;
+    menu.toast(hooks.change ? t('auth.emailChanged') : me.hasPassword ? t('auth.emailAddedPassword', { email }) : t('auth.emailAdded', { email }), 'ok');
+  };
+  const again = navButton(
+    'mn-btn mn-btn-secondary',
+    t('auth.askAgain'),
+    () =>
+      void acc.emailStart(start.to).then(
+        (s) => {
+          attempt = s.attempt;
+          readyAt = s.resendAt;
+          resendsLeft = 3;
+          again.hidden = true;
+          code.error(null);
+          code.input.value = '';
+          paint();
+        },
+        (e: unknown) => code.error(authErrText(menu, e)),
+      ),
+    { 'data-key': 'auth-email-again', hidden: true },
+  );
+  const code = codeField((c) => {
+    code.error(null);
+    void acc.emailVerify(attempt, c).then(
+      (me) => {
+        close();
+        done(me);
+      },
+      (e: unknown) => {
+        code.error(authErrText(menu, e));
+        if (e instanceof AccountError && (e.code === 'code_expired' || e.code === 'email_taken' || e.code === 'move_refused')) again.hidden = e.code !== 'code_expired';
+        else code.input.select();
+      },
+    );
+  });
+  code.input.setAttribute('data-autofocus', '');
+  const resend = navButton('mn-btn mn-btn-secondary', '', () => void doResend(), { 'data-key': 'auth-email-resend' });
+  const paint = (): void => {
+    const left = readyAt - Date.now();
+    const label = left > 0 ? t('auth.resendIn', { seconds: Math.ceil(left / 1000) }) : t('auth.resend');
+    if (resend.textContent !== label) resend.textContent = label;
+    const wasWaiting = resend.disabled;
+    resend.disabled = left > 0;
+    resend.hidden = resendsLeft <= 0;
+    if (wasWaiting && left <= 0) live.textContent = t('auth.resendReady');
+  };
+  const doResend = async (): Promise<void> => {
+    if (resend.disabled) return;
+    try {
+      const r = await acc.emailResend(attempt);
+      readyAt = r.resendAt;
+      resendsLeft = r.resendsLeft;
+      live.textContent = '';
+      menu.toast(t('auth.resent'), 'ok');
+    } catch (e) {
+      code.error(authErrText(menu, e));
+      if (e instanceof AccountError && e.code === 'code_expired') again.hidden = false;
+    }
+    paint();
+  };
+  const other = navButton('mn-link', t('auth.otherEmail'), () => {
+    close();
+    queueMicrotask(() => emailSheet(menu, hooks.change ? t('auth.emailChangeTitle') : t('auth.emailAddTitle'), start.to, hooks));
+  }, { 'data-key': 'auth-email-other' });
+  paint();
+  close = menu.modal({
+    title: t('auth.reauthCodeTitle'),
+    body: [h('p.mn-note', null, t('auth.codeSent', { email: start.to })), code.el, again, h('div.mn-prof-code-links', null, resend, other), h('p.mn-note', null, t('auth.emailCodeNote')), live],
+    actions: [{ label: t('profile.cancel'), onClick: () => true }],
+    onClose: () => {
+      if (timer !== null) clearInterval(timer);
+      timer = null;
+    },
+  });
+  if (typeof setInterval === 'function') timer = setInterval(paint, 1000);
+}
+
+/**
+ * Right after a sign-in with a username (§3.10 step 3), and PERFIL's banner's AGREGAR CORREO: "Agrega
+ * tu correo", the date while there is one, the address (prefilled with a provider's hint), ENVIAR
+ * CÓDIGO, VINCULAR for each configured provider the account has not linked, MÁS TARDE. The session is
+ * level 2 there (the password was just typed), so nothing more is asked.
+ */
+export function graceSheet(menu: Menu, o: { until: number | null; closed: boolean; prefill: string; link: OAuthProvider[]; hooks: EmailHooks; goLink: (p: OAuthProvider) => void }): void {
+  const email = field(t('auth.email'), { type: 'email', autocomplete: 'email', maxLength: 254, value: o.prefill, inputmode: 'email', keypad: 'email', enterkeyhint: 'go' });
+  email.input.setAttribute('data-autofocus', '');
+  menu.modal({
+    title: t('auth.graceTitle'),
+    body: [h('p.mn-note', null, graceText(o.until, o.closed)), email.el],
+    actions: [
+      { label: t('auth.sendCode'), primary: true, onClick: sendCodeAction(menu, email, o.hooks) },
+      ...o.link.map((p): SheetAction => ({ label: t('profile.link', { provider: providerName(p).toUpperCase() }), onClick: () => (o.goLink(p), false) })),
+      { label: t('auth.graceLater'), onClick: () => true },
+    ],
+  });
+  sheetEnter([email.input]);
+}
+
+/** The grace's sentence: after the cutoff, with its date, or without one (LEGACY_PASSWORD_UNTIL unset). */
+export function graceText(until: number | null, closed: boolean): string {
+  if (closed) return t('auth.graceClosed');
+  return until !== null ? t('auth.graceDate', { date: cutoffDay(until) }) : t('auth.graceNoDate');
+}
+
+/**
+ * /account#email=<token> (§3.6 step 4): the mailed link of an add or a change, from any device.
+ * Nothing is consumed until CONFIRMAR CORREO (a mail scanner's visit does nothing); then "Done: {email}
+ * is now the email of the account {name}". A dead link says so.
+ */
+export function openEmailLinkSheet(menu: Menu, token: string): void {
+  const acc = menu.host.accounts;
+  const err = h('p.mn-field-error', { hidden: true, 'aria-live': 'polite' });
+  menu.modal({
+    title: t('auth.emailLinkTitle'),
+    body: [h('p.mn-note', null, t('auth.emailLinkNote')), err],
+    actions: [
+      {
+        label: t('auth.emailLinkConfirm'),
+        primary: true,
+        onClick: async () => {
+          err.hidden = true;
+          try {
+            const r = await acc.emailConfirm(token);
+            queueMicrotask(() => menu.modal({ title: t('auth.emailLinkDoneTitle'), body: h('p', null, t('auth.emailLinkDone', { email: r.email, name: r.name })), actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }] }));
+            return true;
+          } catch (e) {
+            err.textContent = authErrText(menu, e);
+            err.hidden = false;
+            return false;
+          }
+        },
+      },
+      { label: t('profile.cancel'), onClick: () => true },
+    ],
+    // Closed (CANCELAR, Back, a sheet over it): the next page load does not bring it back; the mail's link still works.
+    onClose: () => acc.keepPendingLink(null),
+  });
+}
+
+/** /account#undo=<token> (§3.6 step 6): whom it is for (undo/peek), then "Recupera tu cuenta". */
+export async function openUndoSheet(menu: Menu, token: string): Promise<void> {
+  const acc = menu.host.accounts;
+  const loading = loadingSheet(menu);
+  let who: UndoPeekAnswer;
+  try {
+    who = await acc.undoPeek(token);
+  } catch (e) {
+    if (loading.cancelled()) return;
+    loading.close();
+    menu.toast(e instanceof AccountError && e.code === 'link_invalid' ? t('error.account.link_invalid') : errText(e), 'error');
+    return;
+  }
+  if (loading.cancelled()) return;
+  loading.settle();
+  undoSheet(menu, token, who);
+}
+
+/**
+ * M6's undo (§3.6 step 6): "Tu cuenta vuelve a {email}. Elige una contraseña nueva: se cierra la sesión
+ * en todos los dispositivos.", the new password (the address before it for a password manager),
+ * GUARDAR Y ENTRAR. Done: this browser is signed in, every other device is out.
+ */
+export function undoSheet(menu: Menu, token: string, who: UndoPeekAnswer): void {
+  const acc = menu.host.accounts;
+  const pw = newPasswordFields(who.email, t('profile.newPassword'));
+  pw.pass.input.setAttribute('data-autofocus', '');
+  const save = async (): Promise<boolean> => {
+    pw.pass.error(null);
+    const password = pw.check();
+    if (password === null) return false;
+    try {
+      await acc.emailUndo(token, password, who);
+    } catch (e) {
+      pw.pass.error(authErrText(menu, e));
+      return false;
+    }
+    queueMicrotask(() => {
+      menu.modal({ title: t('auth.undoDoneTitle'), body: h('p', null, t('auth.undoDone', { email: who.email })), actions: [{ label: t('outcome.close'), primary: true, onClick: () => true }] });
+      void acc.fetchMe().catch(() => undefined);
+    });
+    return true;
+  };
+  menu.modal({
+    title: t('auth.undoTitle'),
+    body: [h('p.mn-note', null, t('auth.undoNote', { email: who.email })), ...pw.nodes],
+    actions: [
+      { label: t('auth.resetSave'), primary: true, onClick: save },
+      { label: t('profile.cancel'), onClick: () => true },
+    ],
+    onClose: () => acc.keepPendingLink(null),
+  });
+  sheetEnter(pw.inputs);
+}
+
 // ---- the page's link, on load ----------------------------------------------------------------------------
 
 /** The menus up and no other sheet (a join link's, the TV's), as the other URL sheets wait. */
@@ -526,7 +813,9 @@ export async function openAccountLink(menu: Menu, link: AccountLink): Promise<vo
   if (link.token === null) return;
   if (link.kind === 'verify') return openVerifySheet(menu, link.token);
   if (link.kind === 'reset') return openResetSheet(menu, link.token);
-  // email, undo, keep, unsub: sign-in PR 9, 12 and 13 bring their sheets.
+  if (link.kind === 'email') return openEmailLinkSheet(menu, link.token);
+  if (link.kind === 'undo') return openUndoSheet(menu, link.token);
+  // keep, unsub: sign-in PR 12 and 13 bring their sheets.
   menu.host.accounts.keepPendingLink(null);
   menu.toast(t('error.account.link_invalid'), 'error');
 }

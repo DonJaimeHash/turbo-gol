@@ -1,4 +1,4 @@
-# Menús, cuentas, ranked y salas (2026-10-15)
+# Menús, cuentas, ranked y salas (2026-10-30)
 
 Las fórmulas de rating están en `src/net/rating.ts` (con la referencia al paper) y los vectores de
 prueba en `tests/rating.test.mjs`.
@@ -16,18 +16,18 @@ Inicio ── JUGAR ── Casual            (playlists Mano a mano / Parejas / 
       │        └─ Amistoso            (offline contra la IA)
       ├─ ENTRENAMIENTO  (Práctica libre + 9 packs: Definición / Atajadas / Aéreos × Principiante / Intermedio / Experto)
       ├─ CLASIFICACIÓN  (top 100 por playlist + tu posición)
-      ├─ PERFIL         (invitado: entrar / crear cuenta / recuperar; cuenta: rangos y acciones)
+      ├─ PERFIL         (invitado: entrar / crear cuenta con correo; cuenta: rangos, correo y acciones)
       └─ CONFIGURACIÓN  (la pantalla de controles y cámara de siempre)
 ```
 
 - **Barra superior:** el camino recorrido, la región con los jugadores conectados y el chip de cuenta
   (insignia del mejor rango). Al hacer clic en el chip se abre el Perfil.
 - **Barra inferior:** las teclas y el banner de búsqueda, con el tipo, las playlists, el
-  cronómetro y el botón CANCELAR. El banner sigue visible mientras navegás otras pantallas.
+  cronómetro y el botón CANCELAR. El banner sigue visible mientras navegas otras pantallas.
 - **Controles:** teclado (flechas, Enter, Esc / Backspace), mando (D-pad / stick, A, B) y mouse.
-  La navegación es espacial: se mueve al elemento más cercano en la dirección que elegís. Los
+  La navegación es espacial: se mueve al elemento más cercano en la dirección que eliges. Los
   selectores `‹ valor ›` cambian con ← →.
-- **Fin de partido:** volvés a la pantalla desde la que buscaste: Casual, Competitivo o la Sala.
+- **Fin de partido:** vuelves a la pantalla desde la que buscaste: Casual, Competitivo o la Sala.
   - Después de un ranked aparece el resultado: victoria o derrota, MMR antes y después, cambio de
     rango y progreso de clasificación.
 
@@ -35,32 +35,93 @@ Inicio ── JUGAR ── Casual            (playlists Mano a mano / Parejas / 
 
 | Tema | Decisión |
 |---|---|
-| Métodos | Usuario + contraseña (siempre) y Google / Discord (cuando estén sus secretos) |
-| Contraseña | Nunca sale del navegador: se manda PBKDF2-SHA256 (200.000 iteraciones, sal = usuario). El servidor guarda PBKDF2 de eso con sal aleatoria (100.000, el máximo de Workers) |
+| Formas de entrar | Un correo confirmado y una contraseña, Google o Discord (cuando estén sus secretos). Las cuentas viejas con usuario y contraseña siguen entrando con su usuario hasta la fecha de corte (abajo) |
+| Cuentas nuevas | Con un correo: te enviamos un código de 6 dígitos y la cuenta existe solo después de escribirlo. Con Google o Discord, el juego pregunta primero «¿Ya tienes cuenta en Turbogol?» |
+| Un correo, una cuenta | `ana+tg@gmail.com` y `a.na@gmail.com` cuentan como `ana@gmail.com`. Si un proveedor trae un correo que ya es de una cuenta, entras con esa cuenta y lo vinculas |
+| Contraseña | Nunca sale del navegador: se manda PBKDF2-SHA256 (200.000 iteraciones). El servidor guarda PBKDF2 de eso con sal aleatoria (100.000, el máximo de Workers), con una pimienta (`PASSWORD_PEPPER`) cuando está |
 | Sesión | JWT de 1 h para las llamadas; refresh token de 30 días en cookie `__Host-` HttpOnly, Secure, SameSite=Strict, que rota en cada uso |
-| Recuperación | 8 códigos `XXXX-XXXX` al registrarse; cada uno sirve una vez. No hay email |
-| Fuerza bruta | 5 fallos por usuario → espera de 30 s que se duplica hasta 15 min; 30 por IP; 5 registros por minuto por IP; Turnstile en el registro (activo en el despliegue oficial) |
+| Recuperación | «¿Olvidaste tu contraseña?» manda un enlace a tu correo (30 minutos, un uso). Los códigos de recuperación viejos sirven hasta la fecha de corte |
+| Fuerza bruta | Turnstile en cada entrada y registro; límites durables en `AccountsDO` por correo y red, por correo y por red, más altos para una dirección IPv4 (escuelas, redes móviles) |
 | Almacenamiento | Un Durable Object con SQLite (`AccountsDO`): 25.000 cuentas ocupan pocos MB |
 | Invitados | Siguen igual: Casual, salas y entrenamiento. No tienen rango ni aparecen en la clasificación |
 
+### Agregar o cambiar el correo
+
+En **PERFIL › Cuenta y seguridad**, la fila **Correo** muestra tu correo con **CAMBIAR CORREO**,
+**AGREGAR CORREO** si no tienes uno, o el correo de Discord o Google con **CONFIRMAR CORREO** si
+todavía no lo confirmaste.
+
+1. Si hace rato que no confirmas que eres tú, el juego te lo pide primero: con tu contraseña, un
+   código a tu correo o el botón de tu proveedor. Para cambiar un correo que ya tienes no alcanza
+   con Discord: usa tu contraseña o un código.
+2. Escribe el correo nuevo y toca **ENVIAR CÓDIGO**. Te llega un código de 6 dígitos (y un enlace)
+   a ese correo. Escríbelo en el juego o abre el enlace en cualquier dispositivo.
+3. Al cambiarlo:
+   - tu correo anterior recibe un aviso con un enlace para deshacer el cambio durante 7 días;
+   - ese correo queda reservado para tu cuenta esos 7 días;
+   - se cierra la sesión en tus otros dispositivos.
+4. **Si no fuiste tú:** abre el enlace del aviso. Tu cuenta vuelve al correo anterior, eliges una
+   contraseña nueva, se cierra la sesión en todos los dispositivos y se desvinculan Google o Discord
+   si se vincularon en esos 7 días. Después el correo no se puede cambiar por 7 días.
+
+Si el correo nuevo ya es de otra cuenta, ese buzón recibe un mensaje en vez del código. Si esa otra
+cuenta también es tuya y entra con Discord o Google, el mensaje trae un código para pasar el correo
+a esta cuenta; la otra sigue entrando con su proveedor. Si el correo es la única forma de entrar a
+la otra cuenta, no se puede pasar.
+
+### Si perdiste el acceso a tu correo
+
+El correo es la llave de la cuenta: de ahí salen los enlaces para elegir otra contraseña.
+
+- **Si todavía entras** (con tu contraseña, Google o Discord), cambia el correo en PERFIL antes de
+  perder también esa forma de entrar.
+- **Si no entras de ninguna forma** y el correo ya no es tuyo, la cuenta no se puede recuperar.
+  Crea una cuenta nueva. Por eso conviene tener dos formas de entrar: tu correo con contraseña y
+  Google o Discord.
+
+### Cuentas viejas con usuario y contraseña
+
+Las cuentas creadas antes de los correos entran con su usuario y su contraseña de siempre.
+
+- Al entrar con el usuario, el juego te pide agregar un correo o vincular Google o Discord. Tu
+  contraseña sigue siendo la misma: con el correo confirmado, entras con el correo y esa contraseña.
+- PERFIL muestra un aviso hasta que la cuenta tiene un correo confirmado, y PERFIL lleva un punto
+  en el menú.
+- **La fecha de corte:** desde ese día una contraseña sin correo confirmado ya no sirve para entrar.
+  La cuenta todavía se salva mientras tenga una sesión abierta: confirma que eres tú con la
+  contraseña y agrega el correo.
+
+**Para el dueño (cómo fijar la fecha).** La fecha es la variable `LEGACY_PASSWORD_UNTIL` del Worker,
+una fecha ISO (por ejemplo `"2027-01-15"`). Mientras no está, no hay corte y el juego dice «pronto»,
+sin fecha. Para fijarla:
+
+1. Agrega `"LEGACY_PASSWORD_UNTIL": "2027-01-15"` en `vars` de `server/wrangler.jsonc` (es pública:
+   no es un secreto) y despliega como siempre (`npm run deploy`).
+2. El corte cae a las 12:00 UTC de ese día, el mismo día en América y en España. Nunca es antes de
+   30 días después de que el servidor vio la variable por primera vez (`meta.legacy_seen`): una fecha
+   más cercana se corre a ese piso, y una fecha posterior alarga el plazo.
+3. `GET /api/config` muestra el corte en `auth.legacy` (`phase` `grace` y `until`). Siete días antes,
+   las cuentas con la contraseña vieja y un correo confirmado reciben un recordatorio.
+4. Si quitas la variable, el corte desaparece y el piso empieza de nuevo la próxima vez.
+
 ### Activar Google y Discord
 
-El código está listo. Cada proveedor se activa cuando cargás sus dos secretos, y si no están, el
+El código está listo. Cada proveedor se activa cuando cargas sus dos secretos, y si no están, el
 botón no aparece.
 
 **Google** (console.cloud.google.com → APIs & Services):
-1. En *OAuth consent screen*, tipo External, completá nombre y email de soporte. El scope es
+1. En *OAuth consent screen*, tipo External, completa nombre y email de soporte. El scope es
    `openid email`: se pide el correo, nunca el nombre.
 2. En *Credentials → Create credentials → OAuth client ID*, tipo Web application.
 3. Authorized redirect URI: `https://turbo-gol.com/api/auth/oauth/google/callback`.
-4. Copiá el Client ID y el Client secret.
+4. Copia el Client ID y el Client secret.
 
 **Discord** (discord.com/developers/applications):
 1. *New Application* → OAuth2.
 2. Redirect: `https://turbo-gol.com/api/auth/oauth/discord/callback`.
-3. Copiá el Client ID y el Client Secret (con *Reset Secret*). El scope es `identify email`.
+3. Copia el Client ID y el Client Secret (con *Reset Secret*). El scope es `identify email`.
 
-Después cargalos como secretos del Worker (cada comando pide el valor):
+Después cárgalos como secretos del Worker (cada comando pide el valor):
 
 ```
 cd server
@@ -131,7 +192,7 @@ falsifica un Origin local) puede usar `POST /api/dev/signin` con cualquier nombr
   configura, saca jugadores e inicia la partida, y si se va, pasa al que más tiempo lleva.
 - **Inicio:** el matchmaker de la región arma la partida con esos equipos exactos y completa con
   bots. P2P necesita 2 humanos o más; uno solo juega en servidor. No suman ni restan rango.
-- **Vuelta:** al terminar el partido volvés a la sala. Se reabre cuando vuelven todos, o a los
+- **Vuelta:** al terminar el partido vuelves a la sala. Se reabre cuando vuelven todos, o a los
   40 min.
 - **Reglas experimentales** (Ajustes > Experimental, solo cuentas con el interruptor activado):
   el anfitrión de una sala P2P elige Estándar, un preset incluido o uno propio. Es una copia del
@@ -167,6 +228,9 @@ falsifica un Origin local) puede usar `POST /api/dev/signin` con cualquier nombr
 | `tests/rating.test.mjs` | Reproduce el vector de referencia de openskill.js; reglas de abandono; rangos |
 | `server/test/accounts.test.mjs` | `AccountStore` sobre node:sqlite (registro, refresh, recuperación, OAuth, renombre, ranked idempotente, bloqueos, clasificación), crypto, throttle, OAuth con fetch falso, matchmaking ranked, helpers de salas |
 | `tests/menu-accounts.test.mjs` | Navegación espacial, AccountClient y LobbyClient con red falsa |
+| `server/test/accounts-email.test.mjs` | Las cuentas con correo: registro con código, entrada, «¿Olvidaste tu contraseña?», los límites de correo y la confirmación por código |
+| `server/test/accounts-email-manage.test.mjs` | Agregar y cambiar el correo: el código al correo nuevo, el aviso y el deshacer al anterior, la reserva de 7 días, el paso a esta cuenta del correo de otra, las preferencias, y la fecha de corte de las cuentas viejas |
+| `tests/account-client.test.mjs`, `tests/menu-accounts.test.mjs` | AccountClient con red falsa, las hojas de PERFIL y de los enlaces del correo |
 | `server/test/dev-signin.test.mjs` | La entrada de desarrollo: 404 igual que una ruta desconocida sin `DEV_AUTH` o fuera de un host local, 200 en local, la cuenta con `<nombre>@dev.invalid` confirmado, `auth.devSignIn` en `/api/config`, y que ningún archivo del repo fije `DEV_AUTH` |
 | `server/test/smoke-accounts.mjs` | Contra `wrangler dev` con `DEV_AUTH=1`: entrada de desarrollo, refresh rotativo, ranked con forfeit y MMR, bloqueo, población, salas con contraseña e inicio P2P, renombre y logout. Solo en local: crea cuentas descartables |
 | Navegador (pane, `wrangler dev` + Vite) | Casual con banner y caída a servidor, vuelta al menú, registro con códigos, Competitivo con rangos, sala creada e iniciada con vuelta a la sala, entrenamiento desde el menú, y ranked completo contra un rival de prueba que abandona: el modal mostró VICTORIA y la clasificación 1/5 |

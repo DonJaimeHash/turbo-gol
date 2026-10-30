@@ -271,7 +271,8 @@ test('sign-in PR 4: "confirm it\'s you" asks for the level the server names; at 
   assert.equal(e.level, 2, 'the level comes with the refusal');
   const { readFile } = await import('node:fs/promises');
   const src = await readFile(new URL('../src/ui/screens/profile.ts', import.meta.url), 'utf8');
-  assert.match(src, /const fresh = \(go: \(\) => void, level: 1 \| 2 = 1, force = false\): void => \{\s*if \(!force && acc\.fresh\(level\)\)/, 'the sheet is for a level');
+  // (sign-in PR 9 adds `resume`: the dialog a provider's round trip comes back to.)
+  assert.match(src, /const fresh = \(go: \(\) => void, level: 1 \| 2 = 1, force = false, resume: string \| null = null\): void => \{\s*if \(!force && acc\.fresh\(level\)\)/, 'the sheet is for a level');
   assert.match(src, /const offered = level === 1 \? own : \[\];/, 'no provider at level 2');
   assert.match(src, /e\.code === 'reauth_required' && e\.level > level \? unlinkNow\(p, 2\)/, 'an unlink asked for level 2 asks again, once');
   const es = (await import('../src/locales/es.ts')).default;

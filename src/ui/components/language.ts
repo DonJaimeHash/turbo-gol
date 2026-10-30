@@ -23,7 +23,11 @@ export function openLanguagePicker(menu: Menu): void {
     else if (busy()) {
       close();
       menu.toast(t('lang.busy'));
-    } else setLanguage(code);
+    } else {
+      // Signed in: the account's mail follows the choice once the page reloads in it (sign-in PR 9).
+      menu.host.accounts.noteLanguageChoice(code ?? systemLanguage());
+      setLanguage(code);
+    }
   };
   const option = (code: LanguageCode | null, label: string): HTMLButtonElement => {
     const on = code === saved;

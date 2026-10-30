@@ -29,7 +29,7 @@
  * The HTTP implementation is injectable for node tests (tests/account-client.test.mjs).
  */
 import { legacyPasswordKey, normalizeEmail, passwordIssue, passwordKey, usernameIssue } from './account';
-import type { AccountIssue, AccountSession, CodeResendAnswer, CodeStartAnswer, DeviceSession, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, PasswordLinkAnswer, Playlist, RankedResultAnswer, ResetPeekAnswer, SignupCheckAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer } from './account';
+import type { AccountIssue, AccountSession, CodeResendAnswer, CodeStartAnswer, DeviceSession, EmailConfirmAnswer, ExperimentalAnswer, LeaderboardAnswer, MeInfo, MyNode, OAuthProvider, PasswordLinkAnswer, Playlist, RankedResultAnswer, ResetPeekAnswer, SignupCheckAnswer, TvInfoAnswer, TvPollAnswer, TvStartAnswer, UndoPeekAnswer } from './account';
 import { DEAD_LINK_CODES, keepAttempt, keepLastSignIn, keepLink, localResendAt, pageStore, readAttempt, readLastSignIn, readLink } from './emailAuth';
 import type { AccountLink, LastSignIn, LegacyPhase, StoredAttempt } from './emailAuth';
 import type { FetchLike, ResponseLike, StorageLike } from './NetClient';
@@ -320,6 +320,14 @@ export interface AuthConfig {
 /** A sign-up's proof of the mailbox: the code typed in the browser that started it, or the mailed link's token. */
 export type CodeProof = { attempt: string; code: string } | { token: string };
 
+/** Settings › Game's Idioma chosen while signed in (sign-in PR 9): sent as the mail's language once the reloaded page has the account back. */
+const LANG_CHOICE_KEY = STORAGE_PREFIX + 'auth.lang';
+/** That choice counts this long (a reload, a slow restore). */
+const LANG_CHOICE_MS = 10 * 60_000;
+/** PERFIL's dialog to reopen after a provider's "confirm it's you" round trip (keepResume), and how long it counts. */
+const RESUME_KEY = STORAGE_PREFIX + 'auth.dialog';
+const RESUME_MS = 10 * 60_000;
+
 /** The sessionStorage marker of a provider button pressed on this device ("Continue as Ana · Discord" once it comes back). */
 const PROVIDER_TRY_KEY = STORAGE_PREFIX + 'auth.provider';
 /** That marker counts this long: a provider's round trip. */
@@ -596,7 +604,11 @@ export class AccountClient {
     return this.adopt(sessionPart(s));
   }
 
-  /** The confirm sheet's CANCELAR (POST /api/auth/pending/cancel): the pending identity goes. Never rejects. */
+  /**
+   * The confirm sheet's CANCELAR, Back or Esc (POST /api/auth/pending/cancel): the pending identity
+   * goes, and so does the provider mark of its round trip, which signed nobody in ("continue as"
+   * never learns a provider from it). Never rejects.
+   */
   async cancelPending(): Promise<void> {
     try {
       await this.call('/api/auth/pending/cancel', {});
@@ -1223,6 +1235,151 @@ export class AccountClient {
     const s = await this.jsonOrFail<AccountSession>(await this.call('/api/auth/reauth/code/verify', { attempt, code }, await this.bearer()));
     if (!isSession(s) || s.playerId !== this.account?.playerId) throw new AccountError(t('auth.signInFirst'), 401, 'unauthorized');
     return this.adopt(sessionPart(s));
+  }
+
+  // ---- adding and changing the email, the mail's language (sign-in PR 9: the design's §2.6, §2.9, §3.6) ----
+
+  /**
+   * ENVIAR CÓDIGO (POST /api/me/email { email, lang }): a code to the new address (an add when the
+   * account has none, a change otherwise), the same answer whoever holds that address (I6: when
+   * another account does, its mailbox gets M7 instead). Its attempt stays with the sheet that asked
+   * (a reload drops it; the mail's link still works). Rejects bad_email before any request, and
+   * reauth_required { level } when this browser must confirm it is them first (an add fresh(1), a
+   * change fresh(2), a password of before once at level 2: its re-key), same_email, email_locked.
+   */
+  async emailStart(email: string): Promise<{ attempt: string; resendAt: number; to: string }> {
+    const address = normalizeEmail(email);
+    if (address === null) throw new AccountError(t('error.account.bad_email'), 400, 'bad_email');
+    const r = await this.jsonOrFail<CodeStartAnswer>(await this.call('/api/me/email', { email: address, lang: language() }, await this.bearer()));
+    if (typeof r?.attempt !== 'string') throw new AccountError(t('error.server'), 200, 'protocol');
+    return { attempt: r.attempt, resendAt: localResendAt(typeof r.resendAt === 'number' ? r.resendAt : 0, this.now()), to: typeof r.to === 'string' ? r.to : address };
+  }
+
+  /**
+   * The code of emailStart (POST /api/me/email/verify { attempt, code }): the address is the
+   * account's now (a change also signed the other devices out and mailed the old address its undo).
+   * Resolves the account's profile as it is now (adopted as `me`). Rejects code_wrong
+   * (detail.triesLeft), code_expired, email_taken (a race), move_refused.
+   */
+  async emailVerify(attempt: string, code: string): Promise<MeInfo> {
+    const me = await this.jsonOrFail<MeInfo>(await this.call('/api/me/email/verify', { attempt, code, lang: language() }, await this.bearer()));
+    if (typeof me?.playerId !== 'string' || me.playerId !== this.account?.playerId) throw new AccountError(t('error.server'), 200, 'protocol');
+    this.me = me;
+    this.changed();
+    return me;
+  }
+
+  /** REENVIAR of emailStart's code (POST /api/auth/code/resend with the Bearer): the same code and link again. */
+  emailResend(attempt: string): Promise<CodeResendAnswer> {
+    return this.codeResend(attempt, true);
+  }
+
+  /**
+   * /account#email=<token> (POST /api/auth/email/confirm { token }): the mailed link of an add or a
+   * change, from any device, no session needed. Resolves the account's name and its address now; the
+   * kept token goes once it took (or the server says it is dead).
+   */
+  async emailConfirm(token: string): Promise<EmailConfirmAnswer> {
+    const r = await this.settleLink({ token }, true, async () => this.jsonOrFail<EmailConfirmAnswer>(await this.call('/api/auth/email/confirm', { token, lang: language() })));
+    if (typeof r?.name !== 'string' || typeof r.email !== 'string') throw new AccountError(t('error.server'), 200, 'protocol');
+    if (this.account !== null) void this.fetchMe().catch(() => undefined);
+    return { ok: true, name: r.name, email: r.email };
+  }
+
+  /** /account#undo=<token>'s sheet (POST /api/auth/email/undo/peek): whom it is for and the address it brings back. Consumes nothing. */
+  async undoPeek(token: string): Promise<UndoPeekAnswer> {
+    const r = await this.settleLink({ token }, false, async () => this.jsonOrFail<UndoPeekAnswer>(await this.call('/api/auth/email/undo/peek', { token })));
+    if (typeof r?.name !== 'string' || typeof r.email !== 'string') throw new AccountError(t('error.server'), 200, 'protocol');
+    return { name: r.name, email: r.email };
+  }
+
+  /**
+   * GUARDAR Y ENTRAR on the undo sheet (POST /api/auth/email/undo { token, password }): the account
+   * goes back to `who.email` with this new password; every device is signed out and this browser
+   * signed in (level 2). The password is checked here first, against the name and that address.
+   */
+  async emailUndo(token: string, password: string, who: UndoPeekAnswer): Promise<AccountSession> {
+    const p = passwordIssue(password, { username: who.name, email: who.email });
+    if (p !== null) throw issueError(p, 'bad_password');
+    const key = await passwordKey(password);
+    if (this.refreshing !== null) await this.refreshing.catch(() => null);
+    const s = await this.settleLink({ token }, true, async () => this.jsonOrFail<AccountSession>(await this.call('/api/auth/email/undo', { token, password: key })));
+    if (!isSession(s)) throw new AccountError(t('error.server'), 200, 'protocol');
+    this.rememberSignIn(s.name, 'email');
+    return this.adopt(sessionPart(s));
+  }
+
+  /**
+   * Settings › Game's Idioma, while signed in (§2.9, §4.2): the choice is kept for this tab
+   * (sessionStorage) before the page reloads in the new language, and sendLanguageChoice sends it
+   * once the account is back. Never from a TV (its session never sets the mail's language).
+   */
+  noteLanguageChoice(lang: string): void {
+    if (this.account === null || this.account.tv === true || (lang !== 'es' && lang !== 'en')) return;
+    try {
+      this.sessionStore.setItem(LANG_CHOICE_KEY, JSON.stringify({ lang, id: this.account.playerId, at: this.now() }));
+    } catch {
+      /* storage off: the mail keeps its language */
+    }
+  }
+
+  /**
+   * The Idioma choice noteLanguageChoice kept (POST /api/me/prefs { lang, tz }): the language and
+   * zone of the account's mail follow the person's choice, never a sign-in or a device. Sent once,
+   * for the account that chose it; a refusal drops it too. Resolves whether it went.
+   */
+  async sendLanguageChoice(): Promise<boolean> {
+    let v: { lang?: unknown; id?: unknown; at?: unknown } | null = null;
+    try {
+      const raw = this.sessionStore.getItem(LANG_CHOICE_KEY);
+      v = raw === null ? null : (JSON.parse(raw) as { lang?: unknown; id?: unknown; at?: unknown });
+    } catch {
+      v = null;
+    }
+    if (v === null) return false;
+    const a = this.account;
+    const fresh = typeof v.at === 'number' && this.now() - v.at < LANG_CHOICE_MS;
+    if (a === null || a.tv === true || v.id !== a.playerId || !fresh || (v.lang !== 'es' && v.lang !== 'en')) {
+      if (a !== null || !fresh) this.sessionStore.removeItem(LANG_CHOICE_KEY);
+      return false;
+    }
+    let sent = true;
+    try {
+      await this.ownCall('/api/me/prefs', { lang: v.lang, tz: timeZone() });
+    } catch (e) {
+      // No network: kept for the next load. Anything the server said: dropped.
+      if (e instanceof AccountError && e.code === 'network') return false;
+      sent = false;
+    }
+    this.sessionStore.removeItem(LANG_CHOICE_KEY);
+    return sent;
+  }
+
+  /**
+   * PERFIL's dialog to come back to after a provider's "confirm it's you" round trip (§3.6 step 2:
+   * only a marker crosses the redirect, nothing typed): 'email:add', 'email:change' or
+   * 'email:confirm', for 10 minutes in this tab. null forgets it.
+   */
+  keepResume(dialog: string | null): void {
+    try {
+      if (dialog === null) this.sessionStore.removeItem(RESUME_KEY);
+      else this.sessionStore.setItem(RESUME_KEY, JSON.stringify({ dialog, at: this.now() }));
+    } catch {
+      /* storage off: PERFIL opens without it */
+    }
+  }
+
+  /** The marker of keepResume, taken once (null: none, stale, or malformed). */
+  takeResume(): string | null {
+    try {
+      const raw = this.sessionStore.getItem(RESUME_KEY);
+      if (raw === null) return null;
+      this.sessionStore.removeItem(RESUME_KEY);
+      const v = JSON.parse(raw) as { dialog?: unknown; at?: unknown };
+      return typeof v.dialog === 'string' && /^email:(add|change|confirm)$/.test(v.dialog) && typeof v.at === 'number' && this.now() - v.at < RESUME_MS ? v.dialog : null;
+    } catch {
+      return null;
+    }
   }
 
   /** A mailed link the page took out of its URL and has not settled (sessionStorage), null when none. */

@@ -215,6 +215,21 @@ export function signInRoute(identity: string, phase: LegacyPhase): SignInRoute {
   return phase === 'closed' ? { kind: 'closed' } : { kind: 'legacy', username: v };
 }
 
+// ---- an account to finish: an email to add or to confirm (sign-in PR 9, the design's §3.6, §3.10) ---------
+
+/**
+ * What PERFIL's banner (and the dot on PERFIL in the sections) asks of a signed-in account: 'add'
+ * for a password that signs in by its username (no verified email: it stops at the cutoff), 'confirm'
+ * for a provider's address carried as a hint (no verified email yet); null when the account has a
+ * verified email, has neither, its profile is not in yet, or the session is a TV's (its PERFIL shows
+ * only its sign-out).
+ */
+export function emailNudge(me: { hasPassword?: boolean; emailVerified?: boolean; emailHint?: string | null } | null, tv: boolean): 'add' | 'confirm' | null {
+  if (me === null || tv || me.emailVerified === true) return null;
+  if (typeof me.emailHint === 'string' && me.emailHint.length > 0) return 'confirm';
+  return me.hasPassword === true ? 'add' : null;
+}
+
 // ---- the last sign-in on this device (the design's §3.0) ---------------------------------------------
 
 export type SignInMethod = 'email' | OAuthProvider;

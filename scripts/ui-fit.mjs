@@ -38,7 +38,8 @@
 // ENTRENAMIENTO, CLASIFICACIÓN and PERFIL (plan PR 13) run their states: training also as an
 // account with Settings › Experimental on ('training:lab': the LAB tile, HOW TO PLAY as a row), the
 // board with 100 sample rows and yours among them or under them, then as a guest (window.__board),
-// the profile as a guest, an account and a community node operator (window.__profile). 'summary': a
+// the profile as a guest, an account, a community node operator and a password of before with no
+// email (its banner, sign-in PR 9) (window.__profile). 'summary': a
 // pack's summary over the training HUD (TrainingHud.showSummary, sample results), which fails it
 // off screen, text out of its box or under 14 px on a phone (12 elsewhere), a button something
 // covers (the touch controls) or under 44 px for a finger, and AGAIN without the focus (but on a
@@ -134,7 +135,7 @@ const SIZES = [
   { name: '820x1180', w: 820, h: 1180, mobile: true, layout: 'tablet' },
 ].filter((s) => typeof args.sizes !== 'string' || args.sizes.split(',').some((x) => s.name.startsWith(x)));
 // MODOS by its tabs: 'modes:<tab>' opens it on that tab (Menu.open's tab).
-const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'training:lab', 'summary', 'garage', 'garage:account', 'garage:points', 'garage:owned', 'garage:stadiums', 'garage:redeem', 'garage:guide', 'garage:paused', 'leaderboard', 'leaderboard:rows', 'leaderboard:below', 'leaderboard:guest', 'profile', 'profile:account', 'profile:operator', 'final', 'touch', 'sala', 'tv'];
+const SCREENS = typeof args.screens === 'string' ? args.screens.split(',') : ['home', 'modes:casual', 'modes:ranked', 'modes:lobbies', 'modes:ai', 'training', 'training:lab', 'summary', 'garage', 'garage:account', 'garage:points', 'garage:owned', 'garage:stadiums', 'garage:redeem', 'garage:guide', 'garage:paused', 'leaderboard', 'leaderboard:rows', 'leaderboard:below', 'leaderboard:guest', 'profile', 'profile:account', 'profile:operator', 'profile:grace', 'final', 'touch', 'sala', 'tv'];
 // The Salas' samples (window.__sala, plan PR 12): [kind, members]; 'qr' on a TV only.
 const SALA_KINDS = [['members', 1], ['members', 2], ['members', 3], ['members', 4], ['members', 5], ['members', 6], ['reconnecting', 4], ['qr', 4], ['codecells', 0], ['join', 4], ['pill', 4], ['lost', 0]];
 // PR 14's samples (window.__tvSignIn): the keypad's where no fine pointer, 'tv*' on a TV, the rest everywhere.

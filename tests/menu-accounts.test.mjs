@@ -1352,3 +1352,134 @@ test("the phone's /tv after the 'account' step: no \"sign in first\" over PERFIL
   // The confirm step's own round trips (start?pend=1) too.
   assert.match(fnOf(LINKS, 'goPend'), /acc\.providerStarted\(p\);\s*window\.location\.href = acc\.oauthUrl\(p, 'pend'\);/);
 });
+
+// ---- sign-in PR 9: adding and changing the email, the grace, the PR 8 follow-ups ---------------------------
+
+const inputsOf = (menu) => menu.sheet.all().filter((e) => e.tagName === 'INPUT');
+const typeCode = (input, code) => {
+  input.value = code;
+  input.dispatch('input');
+};
+
+test("an add or a change (§3.6): ENVIAR CÓDIGO asks the server, the code sheet checks the sixth digit, the toast says what changed; reauth_required hands over to \"confirm it's you\" at the server's level", async () => {
+  const L = await linksModule();
+  await withDom(async () => {
+    const calls = [];
+    let refuse = null;
+    const acc = {
+      signedIn: true,
+      account: SESSION('Ana', Date.now() + 3_600_000),
+      emailStart: async (email) => {
+        calls.push(['start', email]);
+        if (refuse !== null) throw new AC.AccountError('x', 403, 'reauth_required', 0, refuse);
+        return { attempt: 'A'.repeat(43), resendAt: Date.now() + 60_000, to: email };
+      },
+      emailVerify: async (attempt, code) => (calls.push(['verify', attempt, code]), { playerId: 'p', email: 'nueva@x.com', emailVerified: true, hasPassword: true }),
+      emailResend: async () => ({ resendAt: Date.now() + 60_000, resendsLeft: 2 }),
+    };
+    const menu = replacingMenu(acc);
+    const reauth = [];
+    L.emailSheet(menu, 'Change email', '', { change: true, reauth: (lvl) => reauth.push(lvl) });
+    assert.match(menu.sheet.textContent, /We'll send a code to the new email and a notice to the current one\./);
+    const email = inputsOf(menu).find((e) => e.type === 'email');
+    email.value = 'Nueva@X.com';
+    button(menu, 'SEND CODE').click();
+    for (let i = 0; i < 20 && menu.spec?.title !== 'Type the code'; i++) await settle();
+    assert.deepEqual(calls, [['start', 'nueva@x.com']]);
+    assert.match(menu.sheet.textContent, /We sent a code to nueva@x\.com\./);
+    assert.match(menu.sheet.textContent, /If that email belongs to another account, the email tells you what to do\./);
+    typeCode(inputsOf(menu).find((e) => e.autocomplete === 'one-time-code'), '123456');
+    await settle();
+    await settle();
+    assert.deepEqual(calls.at(-1), ['verify', 'A'.repeat(43), '123456']);
+    assert.deepEqual(menu.toasts.at(-1), ['ok', 'Email changed. Your other devices were signed out.']);
+    assert.equal(menu.sheet, null, 'the code took: the sheet closes');
+    // An add without a password says the address is the account's now; with one, how it signs in.
+    L.emailCodeSheet(menu, { attempt: 'B'.repeat(43), resendAt: Date.now(), to: 'h@x.com' }, { change: false, reauth: () => undefined });
+    acc.emailVerify = async () => ({ playerId: 'p', email: 'h@x.com', emailVerified: true, hasPassword: false });
+    typeCode(inputsOf(menu).find((e) => e.autocomplete === 'one-time-code'), '654321');
+    await settle();
+    await settle();
+    assert.deepEqual(menu.toasts.at(-1), ['ok', "Done: h@x.com is now this account's email."]);
+    // The server wants "confirm it's you" first (a stale session, a password of before): that sheet, at its level.
+    refuse = 2;
+    L.emailSheet(menu, 'Add email', 'h@x.com', { change: false, reauth: (lvl) => reauth.push(lvl) });
+    assert.equal(inputsOf(menu).find((e) => e.type === 'email').value, 'h@x.com', "CONFIRMAR: the hint's address");
+    button(menu, 'SEND CODE').click();
+    for (let i = 0; i < 20 && reauth.length === 0; i++) await settle();
+    assert.deepEqual(reauth, [2]);
+  });
+});
+
+test('the grace sheet after a username\'s sign-in (§3.10 step 3): "Add your email" with the date while there is one, the address (a hint prefilled), SEND CODE, LINK for each provider not linked, LATER', async () => {
+  const L = await linksModule();
+  await withDom(async () => {
+    const menu = replacingMenu({ signedIn: true });
+    const linked = [];
+    const until = Date.UTC(2027, 0, 15, 12);
+    L.graceSheet(menu, { until, closed: false, prefill: 'hugo@x.com', link: ['discord'], hooks: { change: false, reauth: () => undefined }, goLink: (p) => linked.push(p) });
+    assert.equal(menu.spec.title, 'Add your email');
+    assert.match(menu.sheet.textContent, /Add an email by January 15, 2027\. After that you can't sign in with a username\. Your password stays the same\./);
+    assert.equal(inputsOf(menu).find((e) => e.type === 'email').value, 'hugo@x.com');
+    assert.deepEqual(menu.sheet.all().filter((e) => e.tagName === 'BUTTON').map((e) => e.textContent).slice(-3), ['SEND CODE', 'LINK DISCORD', 'LATER']);
+    button(menu, 'LINK DISCORD').click();
+    assert.deepEqual(linked, ['discord']);
+    // No date yet (LEGACY_PASSWORD_UNTIL unset): no deadline; after the cutoff: add one now.
+    assert.equal(L.graceText(null, false), "Add an email: soon you won't be able to sign in with a username. Your password stays the same.");
+    assert.equal(L.graceText(until, true), "Usernames no longer sign in: add an email now so you don't lose this account.");
+  });
+});
+
+test('/account#email= and #undo= (§3.6): the link sheet consumes nothing until its button; the undo names the address it brings back and asks for a new password', async () => {
+  const L = await linksModule();
+  await withDom(async () => {
+    const calls = [];
+    const acc = {
+      signedIn: false,
+      account: null,
+      authConfig: async () => ({ email: true, devSignIn: false, legacy: 'none', legacyUntil: null }),
+      keepPendingLink: (l) => calls.push(['keep', l]),
+      emailConfirm: async (token) => (calls.push(['confirm', token]), { ok: true, name: 'Ana', email: 'nueva@x.com' }),
+      undoPeek: async (token) => (calls.push(['peek', token]), { name: 'Ana', email: 'vieja@x.com' }),
+      emailUndo: async (token, password, who) => void calls.push(['undo', token, password, who.email]),
+      fetchMe: async () => undefined,
+    };
+    const menu = replacingMenu(acc);
+    const token = 'E'.repeat(43);
+    await L.openAccountLink(menu, { kind: 'email', token });
+    assert.equal(menu.spec.title, 'Confirm email');
+    assert.deepEqual(calls, [], 'opening the link consumes nothing');
+    button(menu, 'CONFIRM EMAIL').click();
+    for (let i = 0; i < 20 && menu.spec?.title !== 'Email confirmed'; i++) await settle();
+    assert.deepEqual(calls[0], ['confirm', token]);
+    assert.match(menu.sheet.textContent, /Done: nueva@x\.com is now the email of the account Ana\./);
+    menu.closer();
+    calls.length = 0;
+    await L.openAccountLink(menu, { kind: 'undo', token });
+    for (let i = 0; i < 20 && menu.spec?.title !== 'Recover your account'; i++) await settle();
+    assert.deepEqual(calls[0], ['peek', token]);
+    assert.match(menu.sheet.textContent, /Your account goes back to vieja@x\.com\. Choose a new password: every device is signed out\./);
+    const pass = inputsOf(menu).find((e) => e.autocomplete === 'new-password');
+    assert.equal(inputsOf(menu).find((e) => e.autocomplete === 'username').value, 'vieja@x.com', 'a password manager saves the address');
+    pass.value = 'una contraseña bien larga';
+    button(menu, 'SAVE AND SIGN IN').click();
+    for (let i = 0; i < 20 && menu.spec?.title !== 'Account recovered'; i++) await settle();
+    assert.deepEqual(calls.find((c) => c[0] === 'undo'), ['undo', token, 'una contraseña bien larga', 'vieja@x.com']);
+  });
+});
+
+test("PERFIL (sign-in PR 9): the grace sheet right after a username's sign-in, the banner and the Correo row in Cuenta y seguridad, the dialog confirms it's you first; the Game shows PERFIL's dot and sends the Idioma choice", async () => {
+  const login = fnOf(PROFILE, 'loginForm');
+  assert.match(login, /if \(route\.kind === 'legacy' && me !== null && emailNudge\(me, acc\.account\?\.tv === true\) !== null\) openGrace\(me\);/);
+  const view = fnOf(PROFILE, 'accountView');
+  assert.match(view, /h\('div\.mn-prof-col', null, graceBanner\(me\), id,/, 'the banner first: its first button takes the first focus');
+  assert.match(view, /emailRow\(me\),\s*passwordRow\(me\),\s*usernameUntil,/);
+  assert.match(fnOf(PROFILE, 'graceBanner'), /'data-autofocus': true/);
+  assert.match(fnOf(PROFILE, 'emailDialog'), /fresh\(open, change \|\| legacy \? 2 : 1, legacy, 'email:' \+ mode\);/, 'an add fresh(1), a change fresh(2), a password of before re-keyed first');
+  const game = await readFile(new URL('../src/game/Game.ts', import.meta.url), 'utf8');
+  assert.match(game, /toggleAttribute\('data-profile-dot', id !== null && me !== null && me\.playerId === id && emailNudge\(me, this\.accounts\.account\?\.tv === true\) !== null\)/);
+  assert.match(game, /void this\.accounts\.sendLanguageChoice\(\)/);
+  const lang = await readFile(new URL('../src/ui/components/language.ts', import.meta.url), 'utf8');
+  assert.match(lang, /menu\.host\.accounts\.noteLanguageChoice\(code \?\? systemLanguage\(\)\);\s*setLanguage\(code\);/);
+});
+

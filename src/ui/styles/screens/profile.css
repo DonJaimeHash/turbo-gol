@@ -448,3 +448,26 @@ html[data-layout='portrait'] .mn-prof-form {
 .mn-sheet .mn-set-row {
   margin-block: 0.25rem 0.5rem;
 }
+
+/* PERFIL's banner (sign-in PR 9): an email to add or to confirm, folded by its title, never gone. */
+.mn-prof-grace > .mn-prof-fold {
+  border-color: var(--brand);
+}
+
+.mn-prof-grace-body > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* PERFIL's dot in the sections (sign-in PR 9): the account has an email to add or to confirm. */
+html[data-profile-dot] :is([data-key='sec-profile'], [data-key='rail-profile'], [data-key='tabbar-profile'])::after {
+  content: '';
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--brand);
+  border-radius: 50%;
+  pointer-events: none;
+}

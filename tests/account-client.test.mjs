@@ -488,3 +488,128 @@ test("pageStore: what this page wrote reads back first (storage off, or a write 
   off.setItem('k', 'v');
   assert.equal(off.getItem('k'), 'v');
 });
+
+// ---- sign-in PR 9: adding and changing the email, the mail's language, the provider mark -------------------
+
+test('emailStart / emailVerify / emailResend: the Bearer, the address normalized and the language; the code adopts the profile; reauth_required carries its level; a bad address sends nothing', async () => {
+  const me = { playerId: 'abcdef0123456789', name: 'Mariana', email: 'nueva@x.com', emailVerified: true, hasPassword: true, providers: ['password'] };
+  let refuse = false;
+  const { acc, calls } = client({
+    '/api/auth/refresh': () => res(200, SESSION()),
+    '/api/me/email': () => (refuse ? res(403, { error: 'reauth_required', message: 'x', level: 2 }) : res(200, { attempt: ATTEMPT, resendAt: NOW + 60_000, to: 'nueva@x.com' })),
+    '/api/me/email/verify': () => res(200, me),
+    '/api/auth/code/resend': () => res(200, { resendAt: NOW + 60_000, resendsLeft: 2 }),
+  });
+  await acc.restore();
+  let heard = 0;
+  acc.subscribe(() => heard++);
+  await assert.rejects(acc.emailStart('no-arroba'), (e) => e.code === 'bad_email');
+  assert.equal(calls.filter((c) => c.path === '/api/me/email').length, 0, 'nothing sent for a bad address');
+  const s = await acc.emailStart('  Nueva@X.com ');
+  assert.deepEqual(s, { attempt: ATTEMPT, resendAt: NOW + 60_000, to: 'nueva@x.com' });
+  const sent = calls.find((c) => c.path === '/api/me/email');
+  assert.deepEqual(sent.body, { email: 'nueva@x.com', lang: 'en' });
+  assert.equal(sent.headers.authorization, 'Bearer jwt-m');
+  const got = await acc.emailVerify(ATTEMPT, '123456');
+  assert.deepEqual(got, me);
+  assert.deepEqual(calls.at(-1).body, { attempt: ATTEMPT, code: '123456', lang: 'en' });
+  assert.equal(acc.me, got, 'the profile adopted');
+  assert.ok(heard > 0, 'the screens hear it');
+  await acc.emailResend(ATTEMPT);
+  assert.equal(calls.at(-1).path, '/api/auth/code/resend');
+  assert.equal(calls.at(-1).headers.authorization, 'Bearer jwt-m', "an account's code resends with its Bearer");
+  refuse = true;
+  const e = await acc.emailStart('otra@x.com').then(() => null, (err) => err);
+  assert.ok(e instanceof AC.AccountError && e.code === 'reauth_required' && e.level === 2);
+});
+
+test('emailConfirm, undoPeek and emailUndo: a link token kept until its POST took, dropped when it is dead; the undo checks the password first and signs this browser in', async () => {
+  const session = memStorage();
+  let confirm = () => res(200, { ok: true, name: 'Mariana', email: 'nueva@x.com' });
+  const { acc, calls } = client(
+    {
+      '/api/auth/email/confirm': () => confirm(),
+      '/api/auth/email/undo/peek': () => res(200, { name: 'Mariana', email: 'vieja@x.com' }),
+      '/api/auth/email/undo': () => res(200, SESSION({ authLvl: 2 })),
+    },
+    { session },
+  );
+  acc.keepPendingLink({ kind: 'email', token: TOKEN });
+  confirm = () => res(503, { error: 'internal' });
+  await assert.rejects(acc.emailConfirm(TOKEN));
+  assert.deepEqual(acc.pendingLink(), { kind: 'email', token: TOKEN }, 'a 5xx keeps it: the same link can go again');
+  confirm = () => res(200, { ok: true, name: 'Mariana', email: 'nueva@x.com' });
+  assert.deepEqual(await acc.emailConfirm(TOKEN), { ok: true, name: 'Mariana', email: 'nueva@x.com' });
+  assert.equal(acc.pendingLink(), null, 'spent');
+  acc.keepPendingLink({ kind: 'email', token: TOKEN });
+  confirm = () => res(410, { error: 'link_invalid' });
+  await assert.rejects(acc.emailConfirm(TOKEN), (e) => e.code === 'link_invalid');
+  assert.equal(acc.pendingLink(), null, 'dead: dropped');
+  acc.keepPendingLink({ kind: 'undo', token: TOKEN });
+  const who = await acc.undoPeek(TOKEN);
+  assert.deepEqual(who, { name: 'Mariana', email: 'vieja@x.com' });
+  assert.deepEqual(acc.pendingLink(), { kind: 'undo', token: TOKEN }, 'a peek consumes nothing');
+  await assert.rejects(acc.emailUndo(TOKEN, 'vieja@x.com1234', who), (e) => e.code === 'bad_password', "the address's local part is refused here");
+  assert.equal(calls.filter((c) => c.path === '/api/auth/email/undo').length, 0);
+  const s = await acc.emailUndo(TOKEN, 'una contraseña bien larga', who);
+  assert.equal(s.authLvl, 2);
+  const body = calls.at(-1).body;
+  assert.equal(body.token, TOKEN);
+  assert.ok(isKey(body.password), 'the key, never the password');
+  assert.equal(acc.signedIn, true);
+  assert.equal(acc.pendingLink(), null);
+  assert.deepEqual(acc.lastSignIn(), { name: 'Mariana', method: 'email' });
+});
+
+test('the Idioma choice while signed in: kept across the reload, then POST /api/me/prefs once for that account (lang and zone); never from a TV, never for another account', async () => {
+  const session = memStorage();
+  const handlers = { '/api/auth/refresh': () => res(200, SESSION()), '/api/me/prefs': () => res(200, { ok: true }) };
+  const a = client(handlers, { session });
+  await a.acc.restore();
+  a.acc.noteLanguageChoice('es');
+  assert.ok(session.getItem('turbogol.auth.lang'), 'kept for this tab');
+  // The page reloads in Spanish: the same tab's storage, a new client.
+  const b = client(handlers, { session });
+  assert.equal(await b.acc.sendLanguageChoice(), false, 'nothing before the account is back');
+  await b.acc.restore();
+  assert.equal(await b.acc.sendLanguageChoice(), true);
+  const prefs = b.calls.filter((c) => c.path === '/api/me/prefs');
+  assert.equal(prefs.length, 1);
+  assert.equal(prefs[0].body.lang, 'es');
+  assert.equal(typeof prefs[0].body.tz, 'string');
+  assert.equal(await b.acc.sendLanguageChoice(), false, 'once');
+  // A TV never sets the mail's language; a choice of another account is dropped unsent.
+  const tv = client({ ...handlers, '/api/auth/refresh': () => res(200, SESSION({ tv: true, authAt: undefined, authLvl: undefined })) }, { session: memStorage() });
+  await tv.acc.restore();
+  tv.acc.noteLanguageChoice('en');
+  assert.equal(await tv.acc.sendLanguageChoice(), false);
+  const other = memStorage();
+  other.setItem('turbogol.auth.lang', JSON.stringify({ lang: 'en', id: '0123456789abcdef', at: NOW }));
+  const c = client(handlers, { session: other });
+  await c.acc.restore();
+  assert.equal(await c.acc.sendLanguageChoice(), false);
+  assert.equal(c.calls.filter((x) => x.path === '/api/me/prefs').length, 0);
+  assert.equal(other.getItem('turbogol.auth.lang'), null);
+});
+
+test('keepResume / takeResume: only a marker of the dialog crosses a provider round trip, once, for 10 minutes', () => {
+  const c = client({});
+  c.acc.keepResume('email:change');
+  assert.equal(c.acc.takeResume(), 'email:change');
+  assert.equal(c.acc.takeResume(), null, 'once');
+  c.acc.keepResume('email:add');
+  c.at(NOW + 11 * 60_000);
+  assert.equal(c.acc.takeResume(), null, 'stale');
+  c.acc.keepResume('rm -rf');
+  assert.equal(c.acc.takeResume(), null, 'only the known dialogs');
+});
+
+test('emailNudge: a password without a verified email asks for one, a provider\'s hint to confirm it; nothing with a verified email, on a TV, or before the profile', () => {
+  assert.equal(E.emailNudge({ hasPassword: true, emailVerified: false, emailHint: null }, false), 'add');
+  assert.equal(E.emailNudge({ hasPassword: true, emailVerified: false, emailHint: 'h@x.com' }, false), 'confirm');
+  assert.equal(E.emailNudge({ hasPassword: false, emailVerified: false, emailHint: 'h@x.com' }, false), 'confirm');
+  assert.equal(E.emailNudge({ hasPassword: false, emailVerified: false, emailHint: null }, false), null, 'a provider account without an address: nothing to finish');
+  assert.equal(E.emailNudge({ hasPassword: true, emailVerified: true, emailHint: null }, false), null);
+  assert.equal(E.emailNudge({ hasPassword: true, emailVerified: false }, true), null, 'a TV');
+  assert.equal(E.emailNudge(null, false), null);
+});

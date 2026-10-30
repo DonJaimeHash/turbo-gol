@@ -192,6 +192,7 @@ import { installTvSamples } from '../ui/screens/tvSignInSamples';
 import { installSalaSamples } from '../ui/screens/lobbySamples';
 import { openLostSheet } from '../ui/screens/match/lost';
 import { installAccountLinks } from '../ui/screens/accountLinks';
+import { emailNudge } from '../net/emailAuth';
 import { REGIONS, isPlaylist, isRegion } from '../net/account';
 import type { RegionId } from '../net/account';
 import { isNodeHost, type QueueResult } from '../net/protocol';
@@ -1226,6 +1227,8 @@ export class Game implements P2PGameHooks {
       }
       void this.accounts.fetchMe().catch(() => undefined);
     }
+    // Idioma chosen while signed in (the page reloaded in it): the account's mail follows it (sign-in PR 9, §2.9).
+    void this.accounts.sendLanguageChoice().catch(() => undefined);
     if (auth !== null && auth.kind !== 'reauth' && detour !== null && this.accounts.signedIn) this.menu.open(detour.screen, false, detour.tab);
   }
 
@@ -1247,6 +1250,8 @@ export class Game implements P2PGameHooks {
   private onAccountChange(): void {
     const id = this.accounts.account?.playerId ?? null;
     const me = this.accounts.me;
+    // PERFIL's dot in the sections (sign-in PR 9, §3.10 step 4): an email to add or to confirm.
+    if (typeof document !== 'undefined') document.documentElement.toggleAttribute('data-profile-dot', id !== null && me !== null && me.playerId === id && emailNudge(me, this.accounts.account?.tv === true) !== null);
     if (id !== null && me !== null && me.playerId === id && typeof me.experimental === 'boolean') this.experimental.noteServerEnabled(me.experimental);
     if (id !== this.experimentalSyncedFor) {
       this.experimentalSyncedFor = id;
