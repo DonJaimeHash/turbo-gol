@@ -149,6 +149,21 @@
  *   POST /dev-signin      { name, refresh }                          -> UserRef & { created } (accountStore.ts devSignIn) |
  *                                                                     400 bad_name | 403 banned; 404 unless DEV_AUTH is '1'
  *                                                                     (the Worker's gate: mail.ts isDevAuth)
+ *   Account deletion (sign-in PR 12, the design's §2.10 and §3.13):
+ *   POST /me-delete       { userId, confirm, level, mailOff?, lang? } -> { purgeAt, mail } (M9 and its cancel link when the
+ *                                                                     account has an address) | 400 bad_confirm | 403
+ *                                                                     reauth_required { level } / banned | 404 | 409
+ *                                                                     maintainer_account / deletion_pending { purgeAt } |
+ *                                                                     429 / 503 (M9 cannot go: nothing changes)
+ *   POST /delete-cancel   { token }                                  -> { ok } | 410 link_invalid (M9's link)
+ *     While a deletion is pending, 409 deletion_pending { purgeAt } answers /auth-finish and /oauth
+ *     (unless they carry `cancelDeletion`: the deletion goes and they sign in), /ranked-check,
+ *     /tv-info, /tv-confirm and /dev-signin; /reset, /email-undo and /recover set the password and
+ *     answer it too, with no session (/reset's with its M4); /tv-poll answers 410. The alarm purges
+ *     what is due, PURGE_BATCH accounts a run, one transaction each, and comes back in
+ *     PURGE_AGAIN_MS while more are due; it tells the NodeRegistryDO of every purged id until it
+ *     answers (/internal/operator-deleted). Every write that binds an address or a provider id
+ *     carries the marks' keys of what it binds (markKeys), so a purged account's sanction comes back.
  *
  * Brute force: durable counters in SQLite (accountStore.ts auth_throttle), exact and global, so a
  * restart or an eviction forgets none and memory never grows with them. Each key is a kind and an
@@ -176,11 +191,12 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
-import { EXPERIMENTAL_REFUSED, carriesPhysics, error, json, limitKey, trustedOperatorIds } from './env';
+import { EXPERIMENTAL_REFUSED, carriesPhysics, deleteGraceMs, error, json, limitKey, nodesConfigured, trustedOperatorIds } from './env';
 import { base64urlEncode, checkInternal } from './auth';
 import { AccountStore, DEV_NAME_PROBLEM } from './accountStore';
-import { CODE_TRIES, LEGACY_CLOSED, LEGACY_REMIND_MS, legacyDateOf } from './accountStore';
-import type { EmailApplied, LegacyState, MailOrder, MailProfile, MailTokenRow } from './accountStore';
+import { CODE_TRIES, LEGACY_CLOSED, LEGACY_REMIND_MS, legacyDateOf, markSlot, providerMark } from './accountStore';
+import type { DeletionRefusal, EmailApplied, LegacyState, MailOrder, MailProfile, MailTokenRow, MarkKind } from './accountStore';
+import { OPERATOR_DELETED_ROUTE, askNodes } from './nodeApi';
 import { FAILURES, MAIL_CAPS, RESEND, alertAfterFailures, dailyCap, laneAllows, mailDay, mailKilled, networkCap, pauseAfterFailures, takeSlot } from './mailCaps';
 import type { MailLane, MailWindow, WindowCap } from './mailCaps';
 import { mailLang, renderMail } from './mailTemplates';
@@ -435,6 +451,28 @@ const CODE_CLASS: Readonly<Record<string, string>> = { signup: 'cfs', reauth: 'c
 /** M10s the daily alarm sends at most (the account lane's share of the day bounds it before that). */
 export const LEGACY_REMINDERS_PER_ALARM = 200;
 
+/** Accounts one alarm run purges (one transaction each, the HMACs of the next one in between): never long in the one object. */
+export const PURGE_BATCH = 25;
+/** With more due, the alarm comes back this soon (the daily part waits for its day). */
+export const PURGE_AGAIN_MS = 60_000;
+/** The NodeRegistryDO's answer to /operator-deleted, at most this long (an unanswered id is told again next run). */
+export const NODES_TELL_TIMEOUT_MS = 5_000;
+
+/** 409 deletion_pending { purgeAt } (§2.10): only ever after the account was proved (a password, a provider, a mailbox). */
+function deletionPending(purgeAt: number, extra: Record<string, unknown> = {}): Response {
+  return json({ error: 'deletion_pending', message: 'Esta cuenta tiene un borrado pendiente', purgeAt, ...extra }, 409);
+}
+
+/** A deletion request's refusal (accountStore.ts deletionBlock) as its answer (§2.10). */
+function deletionRefused(r: DeletionRefusal, purgeAt: number): Response {
+  if (typeof r === 'object') return json({ error: 'reauth_required', message: 'Confirma que eres tú: vuelve a entrar con tu cuenta', level: r.level }, 403);
+  if (r === 'no_user') return error(404, 'no_user');
+  if (r === 'maintainer_account') return error(409, 'maintainer_account', 'La cuenta del proyecto no se puede borrar.');
+  if (r === 'banned') return error(403, 'banned', 'Cuenta suspendida');
+  if (r === 'deletion_pending') return deletionPending(purgeAt);
+  return error(400, 'bad_confirm', 'Escribe tu nombre de usuario para confirmar');
+}
+
 /** LEGACY_PASSWORD_UNTIL (sign-in PR 9, §3.10): a wrangler var, absent until the owner sets the cutoff. */
 type LegacyEnv = { LEGACY_PASSWORD_UNTIL?: string };
 
@@ -539,16 +577,85 @@ export class AccountsDO extends DurableObject<Env> {
     });
   }
 
+  /**
+   * Daily: the prune, the protected names, the TV codes and M10 (meta.prune_at says when that last
+   * ran). Every run: the purge of what is due (purgeDue) and the NodeRegistryDO told of the purged
+   * ids (tellNodes). With more due, the alarm comes back in PURGE_AGAIN_MS for the purge alone.
+   */
   override async alarm(): Promise<void> {
-    this.store.prune(this.now());
-    this.store.rebuildProtectedSkeletons([...trustedOperatorIds(this.env)]);
-    this.tv.sweep(this.now(), true);
-    try {
-      await this.legacyAlarm(this.now());
-    } catch {
-      console.warn('legacy reminders failed');
+    const now = this.now();
+    const last = this.store.lastPrune();
+    const daily = now - last >= PRUNE_EVERY_MS - PURGE_AGAIN_MS;
+    if (daily) {
+      this.store.prune(now);
+      this.store.rebuildProtectedSkeletons([...trustedOperatorIds(this.env)]);
+      this.tv.sweep(now, true);
+      try {
+        await this.legacyAlarm(now);
+      } catch {
+        console.warn('legacy reminders failed');
+      }
+      this.store.setLastPrune(now);
     }
-    await this.ctx.storage.setAlarm(Date.now() + PRUNE_EVERY_MS);
+    let more = false;
+    try {
+      more = (await this.purgeDue(this.now())).more;
+      await this.tellNodes();
+    } catch (e) {
+      console.warn(`account purge failed: ${String((e as Error)?.message ?? e)}`);
+    }
+    const next = more ? Date.now() + PURGE_AGAIN_MS : (daily ? Date.now() : last) + PRUNE_EVERY_MS;
+    await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, next));
+  }
+
+  /**
+   * The purge of the accounts due at `now` (§3.13 step 3), PURGE_BATCH at most, the earliest first:
+   * for each, the HMACs of what its marks are made of (async: other requests run in between), then
+   * its one transaction (accountStore.ts purgeAccount, which checks again that it is still due and
+   * that nothing it marks changed meanwhile). Resumable: a run cut short leaves the others due, and
+   * a purged account is never purged twice. `more`: some are left (another batch, or a retry).
+   */
+  async purgeDue(now: number): Promise<{ purged: string[]; more: boolean }> {
+    const due = this.store.purgeCandidates(now, PURGE_BATCH + 1);
+    const purged: string[] = [];
+    let retry = false;
+    for (const c of due.slice(0, PURGE_BATCH)) {
+      const keys = await this.markKeys(c.values);
+      const r = this.store.purgeAccount(c.userId, keys, now);
+      if (r.result === 'purged') {
+        purged.push(c.userId);
+        console.log(`[accounts] account ${c.userId.slice(0, 6)} purged${r.marks > 0 ? `, ${r.marks} sanction marks kept` : ''}`);
+      } else if (r.result === 'retry') retry = true;
+      else if (r.result === 'maintainer') console.warn(`ALERT a deletion of the project account ${c.userId} was called off: it is never deleted`);
+    }
+    return { purged, more: retry || due.length > PURGE_BATCH };
+  }
+
+  /**
+   * §3.13 step 5: every purged id the NodeRegistryDO has not answered for yet (accountStore.ts
+   * deleted_nodes) goes to /internal/operator-deleted, which bans its nodes; one it answered (any
+   * status but a 5xx) is done, the others go again next run. A deploy without the node settings has
+   * no nodes to ban.
+   */
+  async tellNodes(): Promise<number> {
+    const ids = this.store.deletedUntold(PURGE_BATCH);
+    let told = 0;
+    for (const id of ids) {
+      if (!nodesConfigured(this.env)) {
+        this.store.nodesTold(id);
+        told++;
+        continue;
+      }
+      try {
+        const r = await askNodes(this.env as Parameters<typeof askNodes>[0], OPERATOR_DELETED_ROUTE, { userId: id }, NODES_TELL_TIMEOUT_MS);
+        if (r.status >= 500) continue;
+        this.store.nodesTold(id);
+        told++;
+      } catch {
+        console.warn(`the nodes of the purged account ${id.slice(0, 6)} were not told: tried again next run`);
+      }
+    }
+    return told;
   }
 
   /**
@@ -688,10 +795,34 @@ export class AccountsDO extends DurableObject<Env> {
 
   /** A counter's stored key: its kind, ':' and 32 hex of HMAC(kind + '|' + value) (no username or address at rest). */
   private async throttleKey(kind: string, value: string): Promise<string> {
-    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await this.limitsKey(), enc.encode(kind + '|' + value)));
+    return kind + ':' + (await this.macHex(kind + '|' + value));
+  }
+
+  /** 32 hex of HMAC(text) under the limits key. */
+  private async macHex(text: string): Promise<string> {
+    const mac = new Uint8Array(await crypto.subtle.sign('HMAC', await this.limitsKey(), enc.encode(text)));
     let h = '';
     for (let i = 0; i < 16; i++) h += (mac[i] < 16 ? '0' : '') + mac[i].toString(16);
-    return kind + ':' + h;
+    return h;
+  }
+
+  /**
+   * The sanction marks' keys of `values` (§1.3: 'e:' | 'g:' | 'd:' and an HMAC of the canon or the
+   * provider id, under the limits key, apart from any counter's), as accountStore.ts MarkKeys:
+   * made before a handler's synchronous step, for every value its write may bind.
+   */
+  private async markKeys(values: ReadonlyArray<readonly [MarkKind, string | null | undefined]>): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const [kind, v] of values) {
+      if (typeof v !== 'string' || v === '' || out.has(markSlot(kind, v))) continue;
+      out.set(markSlot(kind, v), kind + ':' + (await this.macHex('mark|' + kind + '|' + v)));
+    }
+    return out;
+  }
+
+  /** What a provider identity may bind (its id, and the canon of its address), for markKeys. */
+  private identMarks(i: { p: OAuthProvider; id: string; email?: string | null } | null | undefined): Array<[MarkKind, string | null]> {
+    return i ? [[providerMark(i.p), i.id], ['e', emailCanon(i.email ?? null)]] : [];
   }
 
   /**
@@ -952,8 +1083,52 @@ export class AccountsDO extends DurableObject<Env> {
         return this.emailUndo(b, now);
       case '/me-prefs':
         return this.mePrefs(b);
+      // Account deletion (sign-in PR 12).
+      case '/me-delete':
+        return this.meDelete(b, now);
+      case '/delete-cancel':
+        return this.deleteCancel(b, now);
     }
     return null;
+  }
+
+  // ---- account deletion (sign-in PR 12: the design's §2.10, §3.13, §4.4 M9) ---------------------------
+
+  /**
+   * POST /me-delete { userId, confirm, level, mailOff?, lang? } -> { purgeAt, mail } (§2.10): the
+   * refusals of accountStore.ts deletionBlock first (nothing written); then, for an account with a
+   * verified address, M9 must be able to go (mail on, room in the day's notice lane: else 503 / 429
+   * and nothing changes, as an email change waits for its undo link); then the request in one
+   * transaction (requestDeletion: the purge DELETE_GRACE ahead, every device signed out, the news
+   * withdrawn, the cancel row), and M9 with its cancel link, in both languages, never skipped.
+   */
+  private async meDelete(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.userId !== 'string' || b.userId.length > 64) return error(400, 'bad_request');
+    const level = b.level === 1 || b.level === 2 ? b.level : 0;
+    const cancel = await this.newReset();
+    const nt = await this.noticeKey(b.userId);
+    // ---- one step from here ----
+    const s = this.store;
+    const blocked = s.deletionBlock(b.userId, b.confirm, level);
+    if (blocked !== null) return deletionRefused(blocked, s.deletionAt(b.userId));
+    const p = s.mailProfile(b.userId) as MailProfile;
+    if (p.email !== null) {
+      if (b.mailOff === true) return error(503, 'email_paused', 'Ahora no podemos enviar correos. Inténtalo en unos minutos.');
+      const lane = this.laneRefusal('notice', now);
+      if (lane !== null) return lane;
+    }
+    const r = s.requestDeletion(b.userId, b.confirm, level, now, deleteGraceMs(this.env), p.email !== null ? { nonce: cancel.nonce, hash: cancel.hash } : null);
+    if (typeof r === 'string' || 'level' in r) return deletionRefused(r, s.deletionAt(b.userId));
+    const mail = p.email !== null ? this.notice(p, nt, { kind: 'deletion_scheduled', name: p.name, at: r.purgeAt, token: cancel.token }, b.lang, now, true) : null;
+    return json({ purgeAt: r.purgeAt, mail });
+  }
+
+  /** POST /delete-cancel { token } -> { ok } | 410 link_invalid (§2.10): M9's link calls the deletion off (accountStore.ts cancelDeletionByToken). */
+  private async deleteCancel(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.token !== 'string' || !B64_43.test(b.token)) return linkInvalid();
+    const hash = await sha256Hex(b.token);
+    // ---- one step from here ----
+    return this.store.cancelDeletionByToken(hash, now) === null ? linkInvalid() : json({ ok: true });
   }
 
   // ---- adding and changing the email (sign-in PR 9: the design's §2.6, §3.6, §4.4 M5 to M7, M12) -------
@@ -1105,12 +1280,13 @@ export class AccountsDO extends DurableObject<Env> {
     const undo = await this.newUndo();
     const moveFrom = typeof first.payload.moveFrom === 'string' ? first.payload.moveFrom : null;
     const keys = { me: await this.noticeKey(b.userId), from: moveFrom !== null ? await this.noticeKey(moveFrom) : null };
+    const marks = await this.markKeys([['e', first.canon]]);
     const v = await this.codeCheck(first.purpose, b.attempt, b.code, b.userId, now);
     // ---- one step from here (codeCheck's own, then the transaction) ----
     if (v instanceof Response) return v;
     const room = this.noticeRoom(b.userId, v.row, b.mailOff === true, now);
     if (room !== null) return room;
-    const r = this.store.applyEmail(v.row.hash, isHex(b.keep, 64) ? b.keep : null, undo, now);
+    const r = this.store.applyEmail(v.row.hash, isHex(b.keep, 64) ? b.keep : null, undo, now, marks);
     if (typeof r === 'string') return this.appliedRefusal(r, false);
     const mail = this.appliedMail(r, undo.token, keys, this.providersOf(b.providers), b.lang, now);
     return json({ ...this.store.me(b.userId, now, this.legacy(now).phase === 'closed'), mail });
@@ -1129,12 +1305,13 @@ export class AccountsDO extends DurableObject<Env> {
     const undo = await this.newUndo();
     const moveFrom = typeof first.payload.moveFrom === 'string' ? first.payload.moveFrom : null;
     const keys = { me: await this.noticeKey(first.userId), from: moveFrom !== null ? await this.noticeKey(moveFrom) : null };
+    const marks = await this.markKeys([['e', first.canon]]);
     // ---- one step from here ----
     const row = this.store.mailToken('hash', first.hash);
     if (row === null || row.usedAt > 0 || now >= row.expiresAt) return linkInvalid();
     const room = this.noticeRoom(first.userId, row, b.mailOff === true, now);
     if (room !== null) return room;
-    const r = this.store.applyEmail(first.hash, isHex(b.keep, 64) ? b.keep : null, undo, now);
+    const r = this.store.applyEmail(first.hash, isHex(b.keep, 64) ? b.keep : null, undo, now, marks);
     if (typeof r === 'string') return this.appliedRefusal(r, true);
     return json({ ok: true, name: r.name, email: r.email, mail: this.appliedMail(r, undo.token, keys, this.providersOf(b.providers), b.lang, now) });
   }
@@ -1165,6 +1342,8 @@ export class AccountsDO extends DurableObject<Env> {
     const r = this.store.undoEmail(hash, b.pw, { ...refresh, kind: 'web' }, now);
     if (r === null) return linkInvalid();
     this.store.throttleClear(clear);
+    // A deletion pending (§2.10): the address and the password are back, the owner signs in with it to call it off.
+    if (typeof r.deletionPending === 'number') return deletionPending(r.deletionPending);
     return json(r);
   }
 
@@ -1254,6 +1433,8 @@ export class AccountsDO extends DurableObject<Env> {
     if (first === null) return linkInvalid();
     const clear = first.p.canon === null ? [] : [await this.throttleKey('e', first.p.canon), await this.throttleKey('ep', first.p.canon + '|' + netOf(b.ip))];
     const nt = await this.noticeKey(first.p.userId);
+    const pend = pendingOf(b.pending);
+    const marks = await this.markKeys([...this.identMarks(pend), ...this.identMarks(pend?.p2)]);
     // ---- one step from here ----
     const row = this.store.mailToken('hash', first.row.hash);
     if (row === null || row.usedAt > 0 || now >= row.expiresAt) return linkInvalid();
@@ -1262,10 +1443,11 @@ export class AccountsDO extends DurableObject<Env> {
     if (r === null) return linkInvalid();
     this.store.throttleClear(clear);
     const mail = this.notice(this.store.mailProfile(r.userId), nt, { kind: 'password_changed', name: r.username, at: now }, b.lang, now);
+    // A deletion pending (§2.4): the password is set and nothing signs in; M4 still goes (the Worker sends it, never the client).
+    if (typeof r.deletionPending === 'number') return deletionPending(r.deletionPending, { mail });
     // linkPending (section 2.4): the reset proved this account's mailbox; the identity pending in
     // this browser goes on it under §3.8's rules (only the account its address leads to, if any).
-    const pend = pendingOf(b.pending);
-    return json({ ...r, mail, ...(pend !== null ? linkAnswer(this.store.linkPending(r.userId, pend, now), pend) : {}) });
+    return json({ ...r, mail, ...(pend !== null ? linkAnswer(this.store.linkPending(r.userId, pend, now, marks), pend) : {}) });
   }
 
   /**
@@ -1456,6 +1638,7 @@ export class AccountsDO extends DurableObject<Env> {
     const codeHash = byToken ? null : await codeHashOf(b.attempt as string, b.code as string);
     const failKey = byToken || first.canon === '' ? null : await this.throttleKey('cfs', first.canon);
     const caps = await this.newAccountCaps(b.ip);
+    const marks = await this.markKeys([['e', first.canon]]);
     const lang = langField(b.lang);
     const terms = typeof b.terms === 'string' && /^[a-z0-9._-]{1,32}$/.test(b.terms) ? b.terms : null;
     // ---- one step from here ----
@@ -1467,7 +1650,7 @@ export class AccountsDO extends DurableObject<Env> {
     if (slots instanceof Response) return slots;
     const issue = usernameIssue(b.username);
     const name = b.username;
-    const r = this.store.finishSignup({ row: first, codeHash }, { username: name, pw: b.pw, lang, tz: tzField(b.tz), news: b.news === true, terms, refresh: { ...refresh, kind: 'web' } }, now, issue === null ? 'ok' : issue.code === 'usernameReserved' ? 'reserved' : 'bad');
+    const r = this.store.finishSignup({ row: first, codeHash }, { username: name, pw: b.pw, lang, tz: tzField(b.tz), news: b.news === true, terms, refresh: { ...refresh, kind: 'web' } }, now, issue === null ? 'ok' : issue.code === 'usernameReserved' ? 'reserved' : 'bad', marks);
     const sl = lang === '' ? 'en' : lang;
     if (r === 'expired') return codeExpired();
     if (r === 'invalid') return linkInvalid();
@@ -1603,6 +1786,8 @@ export class AccountsDO extends DurableObject<Env> {
         const who = subjectOf(b);
         if (who === null) return error(400, 'bad_request');
         const { keys, clear, account } = await this.checkKeys(who, b.ip, b);
+        const pend = pendingOf(b.pending);
+        const marks = pend !== null ? await this.markKeys([...this.identMarks(pend), ...this.identMarks(pend.p2)]) : undefined;
         // Charged at /auth-begin: the failure is counted already (a Worker of before charges nothing).
         const charged = b.charged === true;
         const failure = (): void => {
@@ -1626,14 +1811,16 @@ export class AccountsDO extends DurableObject<Env> {
           failure();
           return error(401, 'bad_credentials', 'canon' in who ? 'Correo o contraseña incorrectos' : 'Usuario o contraseña incorrectos');
         }
-        const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now, { lvl: 2, method: 'canon' in who ? 'password' : 'legacy' }, rekey);
+        // `cancelDeletion` (§2.10): the sign-in sent again after "cancel the deletion?" calls it off.
+        const r = s.signedIn(b.userId, { ...refresh, kind: 'web' }, now, { lvl: 2, method: 'canon' in who ? 'password' : 'legacy' }, rekey, b.cancelDeletion === true);
         if (r === null) return error(403, 'banned');
         s.throttleClear(clear);
         // The network's and the /48's counters keep failures only: this check's charge goes back.
         if (charged) this.refund(keys.filter((k) => !clear.includes(k.key)));
+        // The right password, and a deletion pending: said only now (I6), nothing signed in or linked.
+        if (r === 'deletion_pending') return deletionPending(s.deletionAt(b.userId));
         // linkPending: the identity pending in this browser goes on this account, in the same step (§3.8).
-        const pend = pendingOf(b.pending);
-        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now), pend) } : r);
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks), pend) } : r);
       }
       case '/refresh': {
         const next = grantOf(b.next);
@@ -1681,6 +1868,8 @@ export class AccountsDO extends DurableObject<Env> {
           return error(401, 'bad_recovery', 'Usuario o código de recuperación incorrecto');
         }
         s.throttleClear(clear);
+        // A deletion pending: the password is set, nothing signs in (§2.4's rule): a sign-in with it calls it off.
+        if (typeof r.deletionPending === 'number') return deletionPending(r.deletionPending);
         return json(r);
       }
       case '/oauth': {
@@ -1691,17 +1880,22 @@ export class AccountsDO extends DurableObject<Env> {
         const linkTo = typeof b.linkTo === 'string' ? b.linkTo : null;
         // A link comes from a device that is still signed in (PERFIL's): signed out meanwhile, nothing links.
         const replace = typeof b.replace === 'string' && /^[0-9a-f]{32}$/.test(b.replace) ? b.replace : null;
+        const found = foundOf(b);
+        const pend = linkTo === null ? pendingOf(b.pending) : null;
+        const marks = await this.markKeys([...this.identMarks({ p: provider, id: b.providerId, email: found.email }), ...this.identMarks(pend), ...this.identMarks(pend?.p2)]);
+        // ---- one step from here ----
         if (linkTo !== null && (replace === null || !s.devices(linkTo, now, null).some((d) => d.id === replace && d.kind === 'web'))) return error(401, 'link_expired');
-        const r = s.oauth(provider, b.providerId, linkTo, { ...refresh, kind: 'web' }, now, oauthLevel(b.lvl), foundOf(b));
+        const r = s.oauth(provider, b.providerId, linkTo, { ...refresh, kind: 'web' }, now, oauthLevel(b.lvl), found, { marks, cancelDeletion: b.cancelDeletion === true });
         // Nobody has this identity: nothing is made (I3); the Worker's confirm step asks first.
         if (r === 'pending') return json({ pending: true });
         if (r === 'already_linked') return error(409, 'already_linked', 'Esa cuenta ya está vinculada a otro usuario');
         if (r === 'provider_set') return error(409, 'provider_set', 'Tu cuenta ya tiene otra cuenta de ese proveedor: desvincúlala primero');
         if (r === 'no_user') return error(403, 'no_user');
+        // Its owner's deletion is pending and the start did not ask to call it off (cancelDel=1, §2.10).
+        if (r === 'deletion_pending') return error(409, 'deletion_pending', 'Esta cuenta tiene un borrado pendiente');
         if (linkTo !== null && replace !== null) s.revokeDevice(linkTo, replace);
         // "I already have one" (pend=1): the identity pending in this browser goes on the account it signed in to.
-        const pend = linkTo === null ? pendingOf(b.pending) : null;
-        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now), pend) } : r);
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks), pend) } : r);
       }
       case '/pending-match': {
         const pend = pendingOf(b.pending);
@@ -1714,6 +1908,7 @@ export class AccountsDO extends DurableObject<Env> {
         const refresh = grantOf(b.refresh);
         if (pend === null || refresh === null || typeof b.username !== 'string' || b.username.length > 64 || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
         const caps = await this.newAccountCaps(b.ip);
+        const marks = await this.markKeys([...this.identMarks(pend), ...this.identMarks(pend.p2)]);
         // ---- one step from here ----
         // New accounts per network and per IPv6 /48 in a day (durable), one budget with /signup-finish:
         // checked first, counted only once the account exists.
@@ -1728,7 +1923,7 @@ export class AccountsDO extends DurableObject<Env> {
         const issue = usernameIssue(name);
         if (issue !== null && issue.code === 'usernameReserved') return json({ error: 'name_reserved', message: 'Ese nombre está reservado', suggest: s.suggestName(name, sl) }, 400);
         if (issue !== null) return error(400, 'bad_username', usernameProblem(name) ?? 'Nombre inválido');
-        const r = s.createFromPending(pend, name, { ...refresh, kind: 'web' }, now, { lvl: oauthLevel(b.lvl), lang, tz: tzField(b.tz), news: b.news === true });
+        const r = s.createFromPending(pend, name, { ...refresh, kind: 'web' }, now, { lvl: oauthLevel(b.lvl), lang, tz: tzField(b.tz), news: b.news === true, marks });
         if (r === 'username_taken') return json({ error: 'username_taken', message: 'Ese nombre ya está en uso', suggest: s.suggestName(name, sl) }, 409);
         if (r === 'lookalike') return json({ error: 'name_lookalike', message: 'Ese nombre se parece mucho a otro', suggest: s.suggestName(name, sl) }, 409);
         if (r === 'email_has_account') return error(409, 'email_has_account', 'Ese correo ya es de una cuenta de Turbogol: entra con ella para vincular');
@@ -1792,6 +1987,7 @@ export class AccountsDO extends DurableObject<Env> {
         const code = tvCode(b.code);
         if (code === null || typeof b.userId !== 'string' || typeof b.username !== 'string' || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
         if (s.credentialsById(b.userId)?.banned === true) return error(403, 'banned', 'Cuenta suspendida');
+        if (s.deletionAt(b.userId) > 0) return deletionPending(s.deletionAt(b.userId));
         const r = this.tv.info(code, { userId: b.userId, username: b.username }, b.ip, now, whereOf(b.phone));
         if (typeof r === 'object' && 'throttled' in r) return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: r.throttled }, 429);
         if (r === 'wrong') return error(404, 'tv_code_wrong', 'Ese código no existe');
@@ -1804,6 +2000,8 @@ export class AccountsDO extends DurableObject<Env> {
         if (code === null || typeof b.userId !== 'string' || typeof b.username !== 'string' || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
         // A suspended account grants no TV (its Bearer may still be valid): said on the phone, at once.
         if (s.credentialsById(b.userId)?.banned === true) return error(403, 'banned', 'Cuenta suspendida');
+        // A pending deletion signed every device out (§2.10): a Bearer it left alive approves no TV.
+        if (s.deletionAt(b.userId) > 0) return deletionPending(s.deletionAt(b.userId));
         const r = this.tv.confirm(code, { userId: b.userId, username: b.username }, b.ip, now);
         if (typeof r === 'object') return json({ error: 'throttled', message: 'Demasiados intentos, espera un momento', retryAfterMs: r.throttled }, 429);
         if (r === 'wrong') return error(404, 'tv_code_wrong', 'Ese código no existe');
@@ -1821,8 +2019,8 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
         // A TV the phone approved: a limited scope (accountStore.ts kind 'tv'), whatever the Worker sent.
         const u = s.signedIn(r.userId, { ...refresh, kind: 'tv' }, now);
-        if (u !== null) return json(u);
-        // Suspended after the confirm: the TV says so; deleted meanwhile: the approval went with it.
+        if (u !== null && u !== 'deletion_pending') return json(u);
+        // Suspended after the confirm: the TV says so; deleted (or its deletion asked) meanwhile: the approval went with it.
         return s.credentialsById(r.userId)?.banned === true ? error(403, 'banned', 'Cuenta suspendida') : error(410, 'tv_code_expired', 'El código caducó');
       }
       case '/rename': {
@@ -1928,10 +2126,13 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'bad_name') return error(400, 'bad_name', DEV_NAME_PROBLEM);
         if (r === 'banned') return error(403, 'banned', 'Cuenta suspendida');
         if (r === 'taken') return error(409, 'email_taken');
+        if (r === 'deletion_pending') return error(409, 'deletion_pending', 'Esta cuenta tiene un borrado pendiente');
         return json(r);
       }
       case '/ranked-check': {
         if (typeof b.userId !== 'string' || !Array.isArray(b.playlists) || !b.playlists.every(isPlaylist)) return error(400, 'bad_request');
+        // A pending deletion keeps the account out of the ranked queue (§2.10), whatever Bearer it still holds.
+        if (s.deletionAt(b.userId) > 0) return deletionPending(s.deletionAt(b.userId));
         return json(s.rankedCheck(b.userId, b.playlists as Playlist[], now));
       }
       case '/ranked-lock': {

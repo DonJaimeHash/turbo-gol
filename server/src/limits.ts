@@ -95,6 +95,9 @@
  *   POST /api/auth/email/confirm, email/undo(/peek)  authCode  network  120  RL_120  the mailed links of an add, a change
  *                                                                                    and its undo (and signInSite's /48)
  *   POST /api/me/prefs                  authAcct         account       10  RL_10    the mail's language and zone (Idioma)
+ *   POST /api/me/delete                 authAcct         account       10  RL_10    a deletion request (sign-in PR 12): one
+ *                                                                                    AccountsDO write and M9
+ *   POST /api/auth/delete/cancel        authCode         network      120  RL_120   M9's cancel link (and signInSite's /48)
  *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
  *                                       meNet            network     1200  RL_1200
  *   GET  /api/ranked/result             rankedResult     account       60  RL_60    polled every 1-3 s for two minutes after a ranked match
@@ -284,6 +287,11 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['authCode', 'signInSite'];
       case '/api/me/prefs':
         return ['authAcct'];
+      // Account deletion (sign-in PR 12; the design's §2.16): the request per account, M9's cancel link per network.
+      case '/api/me/delete':
+        return ['authAcct'];
+      case '/api/auth/delete/cancel':
+        return ['authCode', 'signInSite'];
       case '/api/auth/password':
         return ['password'];
       case '/api/auth/recovery-codes':
