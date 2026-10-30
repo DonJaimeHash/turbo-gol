@@ -93,6 +93,8 @@
  *                             account, once
  *   POST /api/auth/tv/poll    { code, secret }                  -> { state: 'pending' } | AccountSession & { state:
  *                             'approved', tv: true } + refresh cookie | 410 (a wrong secret too) | 409 | 403 banned
+ *   POST /api/auth/tv/renew   { code, secret }                  -> { code, expiresAt, ttlMs }: the TV's next code, 20 s
+ *                             before this one ends (6 per start) | 409 tv_code_used | 410 tv_code_expired | 503 busy
  *     A TV's session has a limited scope (the refresh row's kind 'tv', the Bearer's tv claim, kept
  *     through every refresh, 30 days from its start at most): it plays as the account, picks its
  *     car, its settings and presets, but every route that changes a credential or the account's
@@ -1607,20 +1609,51 @@ async function unlink(c: RouteContext): Promise<Response> {
 const LIMIT_TV_START = 10;
 const LIMIT_TV_POLL = 60;
 const LIMIT_TV_CONFIRM = 30;
+/** A TV renews once in a code's life (about every 3.7 minutes): this many a minute per /64 is a few hundred TVs behind one address. */
+const LIMIT_TV_RENEW = 60;
 
+/**
+ * POST /api/auth/tv/start { turnstileToken? }. A solved check makes the code cost one (the TV
+ * renders it as a guest's start does): a script filling the table, or minting a code per phishing
+ * click, pays one per code. A TV whose check wants a press (a remote cannot answer Cloudflare's
+ * challenge) or cannot load it asks with no token: its code counts under tighter caps of its own
+ * (tvCodes.ts TV_OPEN_*: a few per network, a tenth of the table), so a TV is never locked out and
+ * a script that skips the check gets those few codes and no more. A token that fails is refused.
+ */
 async function tvStart(c: RouteContext): Promise<Response> {
   if (c.limited('tvs:' + ipKey(ipOf(c.request)), LIMIT_TV_START)) return error(429, 'rate_limited');
-  // Each code costs a solved check (the TV renders it as a guest's start does): a script filling
-  // the table, or minting a code per phishing click, pays one per code.
   const b = await readJson<{ turnstileToken?: unknown }>(c.request);
   if (!b) return error(400, 'bad_request');
-  const blocked = await c.antiBot(b.turnstileToken);
-  if (blocked !== null) return blocked;
+  let checked = true;
+  if (b.turnstileToken === undefined || b.turnstileToken === null) {
+    // No token: checked anyway where the gate is off (local dev, TURNSTILE_DISABLED), else the open caps.
+    checked = (await c.antiBot(undefined)) === null;
+  } else {
+    const blocked = await c.antiBot(b.turnstileToken);
+    if (blocked !== null) return blocked;
+  }
   const secret = base64urlEncode(randomBytes(32));
-  const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-start', { ip: ipOf(c.request), secret: await sha256Hex(secret), where: whereOfRequest(c.request) });
+  const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-start', { ip: ipOf(c.request), secret: await sha256Hex(secret), where: whereOfRequest(c.request), checked });
   if (!r.ok) return pass(r.res);
   const out: TvStartAnswer = { code: r.data.code, secret, expiresAt: r.data.expiresAt, ttlMs: Math.max(0, r.data.expiresAt - Date.now()), pollMs: TV_POLL_MS };
   return noStore(json(out));
+}
+
+/**
+ * POST /api/auth/tv/renew { code, secret } (§2.14): the TV, 20 s before its code ends, gets a new
+ * one bound to the same secret, so it shows a live code for about 28 minutes and nobody presses
+ * NUEVO CÓDIGO. No check (a TV cannot answer one again): the secret is the proof, and each renewal
+ * counts toward the start's caps, at most 6 per start. 409 tv_code_used: the phone confirmed the old
+ * code (the TV polls it); 410 tv_code_expired: gone, or the renewals used up; 503 busy: the caps.
+ */
+async function tvRenew(c: RouteContext): Promise<Response> {
+  if (c.limited('tvr:' + ipKey(ipOf(c.request)), LIMIT_TV_RENEW)) return error(429, 'rate_limited');
+  const b = await readJson<{ code?: unknown; secret?: unknown }>(c.request);
+  const code = tvCode(b?.code);
+  if (code === null || typeof b?.secret !== 'string' || b.secret.length === 0 || b.secret.length > 128) return error(400, 'bad_request');
+  const r = await accountsJson<{ code: string; expiresAt: number }>(c.env, '/tv-renew', { code, secret: await sha256Hex(b.secret), ip: ipOf(c.request), where: whereOfRequest(c.request) });
+  if (!r.ok) return noStore(pass(r.res));
+  return noStore(json({ code: r.data.code, expiresAt: r.data.expiresAt, ttlMs: Math.max(0, r.data.expiresAt - Date.now()) }));
 }
 
 /** POST /api/auth/tv/info { code }: where the TV is, for the phone's sheet before CONFIRMAR (RFC 8628 section 5.4). */
@@ -1688,6 +1721,7 @@ export async function accountRoute(c: RouteContext, url: URL): Promise<Response 
     if (p === '/api/auth/tv/info') return tvInfo(c);
     if (p === '/api/auth/tv/confirm') return tvConfirm(c);
     if (p === '/api/auth/tv/poll') return tvPoll(c);
+    if (p === '/api/auth/tv/renew') return tvRenew(c);
     if (p === '/api/auth/pending') return pendingInfo(c);
     if (p === '/api/auth/pending/create') return pendingCreate(c);
     if (p === '/api/auth/pending/cancel') return pendingCancel();

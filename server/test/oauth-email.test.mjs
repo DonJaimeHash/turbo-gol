@@ -4,7 +4,9 @@
 // comes first (POST /api/auth/pending, /pending/create with Turnstile and a per-network cap,
 // /pending/cancel); a verified address that matches an account (claimed or as a hint) sends the
 // person to sign in there and link (login with linkPending, start?pend=1), never to a second
-// account; the trust of an address is the server's (I9). Through the real Worker (index.ts) in front of a real AccountsDO
+// account; the trust of an address is the server's (I9); a TV renews its code (POST
+// /api/auth/tv/renew) and, when its Turnstile check wants a press a remote cannot give, starts
+// without one under tighter caps. Through the real Worker (index.ts) in front of a real AccountsDO
 // on node:sqlite, as levels.test.mjs runs them; Google, Discord and Turnstile are fakes (nothing
 // leaves this machine). Run from server/: npm test
 import { test } from 'node:test';
@@ -50,6 +52,7 @@ globalThis.fetch = async (url, init) => {
 
 const { AccountsDO, CREATE_PER_NET, CREATE_PER_SITE } = await import('../src/AccountsDO.ts');
 const A = await import('../src/accountRoutes.ts');
+const TV = await import('../src/tvCodes.ts');
 const AUTH = await import('../src/auth.ts');
 const ACC = await import('../../src/net/account.ts');
 const worker = (await import('../src/index.ts')).default;
@@ -534,4 +537,99 @@ test('DISCORD_SILENT=1: a plain Discord sign-in asks prompt=none (level 0); cons
   const off = makeEnv();
   const plain = await req(off.env, 'GET', '/api/auth/oauth/discord/start', { ip: ip(4), origin: null });
   assert.equal(new URL(plain.location).searchParams.get('prompt'), 'consent', 'off by default');
+});
+
+// ---- the TV ------------------------------------------------------------------------------------------
+
+test('tv/renew: a new code bound to the same secret, the old one live to its end; a confirm of the old one in its last seconds reaches the TV; at most 6 renewals; a wrong secret is an unknown code; a confirmed code is 409', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const st = await post(env, '/api/auth/tv/start', { ip: ip(0) });
+  assert.equal(st.status, 200);
+  const r = await post(env, '/api/auth/tv/renew', { ip: ip(0), body: { code: st.json.code, secret: st.json.secret } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.match(r.json.code, /^[A-Z2-9]{6}$/);
+  assert.notEqual(r.json.code, st.json.code);
+  assert.ok(r.json.ttlMs > TV.TV_CODE_TTL_MS - 5000 && r.json.ttlMs <= TV.TV_CODE_TTL_MS);
+  assert.equal((await post(env, '/api/auth/tv/poll', { ip: ip(0), body: { code: r.json.code, secret: st.json.secret } })).json.state, 'pending');
+  // The phone types the old code (still on the screen it read): the TV, polling the new one, is approved.
+  const phone = await legacyAccount(obj, 'Telefono');
+  const ps = await login(env, phone, 'Telefono', ip(1));
+  assert.equal((await post(env, '/api/auth/tv/confirm', { ip: ip(1), bearer: ps.json.session, body: { code: st.json.code } })).status, 200);
+  const ok = await post(env, '/api/auth/tv/poll', { ip: ip(0), body: { code: r.json.code, secret: st.json.secret } });
+  assert.deepEqual([ok.json.state, ok.json.name, ok.json.tv], ['approved', 'Telefono', true]);
+  assert.equal((await post(env, '/api/auth/tv/poll', { ip: ip(0), body: { code: st.json.code, secret: st.json.secret } })).status, 409, 'one use, both codes');
+  // Six renewals, then the code is over.
+  const t = await post(env, '/api/auth/tv/start', { ip: ip(2) });
+  let code = t.json.code;
+  for (let i = 0; i < TV.TV_RENEWS_MAX; i++) {
+    const n = await post(env, '/api/auth/tv/renew', { ip: ip(2), body: { code, secret: t.json.secret } });
+    assert.equal(n.status, 200, `renewal ${i + 1}`);
+    code = n.json.code;
+  }
+  assert.deepEqual([(await post(env, '/api/auth/tv/renew', { ip: ip(2), body: { code, secret: t.json.secret } })).json.error], ['tv_code_expired']);
+  assert.equal((await post(env, '/api/auth/tv/renew', { ip: ip(2), body: { code, secret: 'x'.repeat(43) } })).status, 410, 'a wrong secret');
+  // A confirmed code: the TV polls it instead.
+  const u = await post(env, '/api/auth/tv/start', { ip: ip(3) });
+  await post(env, '/api/auth/tv/confirm', { ip: ip(1), bearer: ps.json.session, body: { code: u.json.code } });
+  assert.deepEqual([(await post(env, '/api/auth/tv/renew', { ip: ip(3), body: { code: u.json.code, secret: u.json.secret } })).status], [409]);
+});
+
+test('tv/renew counts toward the start\'s caps and never takes another TV\'s code: a /48 that holds its 20 renews one (its old code not counted), and a second is 503 busy until that old code ends', async () => {
+  const { env, obj } = makeEnv();
+  const starts = [];
+  for (let i = 0; i < TV.TV_CODES_PER_48; i++) starts.push((await post(env, '/api/auth/tv/start', { ip: `2001:db8:61:${i.toString(16)}::1` })).json);
+  const one = await post(env, '/api/auth/tv/renew', { ip: '2001:db8:61:0::1', body: { code: starts[0].code, secret: starts[0].secret } });
+  assert.equal(one.status, 200);
+  const two = await post(env, '/api/auth/tv/renew', { ip: '2001:db8:61:1::1', body: { code: starts[1].code, secret: starts[1].secret } });
+  assert.deepEqual([two.status, two.json.error], [503, 'busy']);
+  for (const s of starts.slice(1)) assert.equal((await post(env, '/api/auth/tv/poll', { ip: '2001:db8:61:1::1', body: { code: s.code, secret: s.secret } })).json.state, 'pending', 'every other TV keeps its code');
+  assert.ok(obj);
+  // On the table's own clock: once the first old code has ended, the second TV renews.
+  const t = new TV.TvCodes();
+  const T0 = 1_000_000;
+  const h = (i) => i.toString(16).padStart(64, '0');
+  const codes = [];
+  for (let i = 0; i < TV.TV_CODES_PER_48; i++) codes.push(t.start(`2001:db8:62:${i.toString(16)}::1`, h(i), T0 + i * 1000).code);
+  const renewAt = T0 + TV.TV_CODE_TTL_MS - 20_000;
+  assert.equal(typeof t.renew(codes[0], h(0), '2001:db8:62:0::1', renewAt), 'object');
+  assert.equal(t.renew(codes[1], h(1), '2001:db8:62:1::1', renewAt + 1000), 'busy', "the /48 holds 21 live codes until the first one's old code ends");
+  assert.equal(typeof t.renew(codes[1], h(1), '2001:db8:62:1::1', T0 + TV.TV_CODE_TTL_MS + 1), 'object');
+});
+
+test('the live check\'s TV: a remote cannot answer Turnstile\'s challenge, so tv/start without a token gets a code under tighter caps; a script that skips the check gets a few per network and a tenth of the table; a TV that solves it is never stopped by them', async () => {
+  const { env, obj } = makeEnv(TURNSTILE_ON);
+  const st = await post(env, '/api/auth/tv/start', { ip: '198.51.100.40', body: {} });
+  assert.equal(st.status, 200, 'a TV with only a remote still gets its code: ' + JSON.stringify(st.json));
+  assert.match(st.json.code, /^[A-Z2-9]{6}$/);
+  // The renewal of an unchecked code stays unchecked.
+  const rn = await post(env, '/api/auth/tv/renew', { ip: '198.51.100.40', body: { code: st.json.code, secret: st.json.secret } });
+  assert.equal(rn.status, 200);
+  assert.equal(obj.tv.codes.get(rn.json.code).checked, false);
+  // A failed token is still refused (it is not the TV's fallback).
+  assert.equal((await post(env, '/api/auth/tv/start', { ip: '198.51.100.40', body: { turnstileToken: 'bad-token' } })).status, 403);
+  const t = obj.tv;
+  const live = (codes) => codes.filter((c) => t.codes.get(c) && !t.codes.get(c).used && t.codes.get(c).expiresAt > Date.now()).length;
+  // One IPv4 address (a carrier's NAT): TV_OPEN_PER_IPV4 unchecked codes live at once, a new one for the oldest.
+  const v4 = [];
+  for (let i = 0; i < TV.TV_OPEN_PER_IPV4 + 3; i++) v4.push(t.start('198.51.101.7', 'a'.repeat(64), Date.now(), null, false).code);
+  assert.equal(live(v4), TV.TV_OPEN_PER_IPV4);
+  // Its /24: TV_OPEN_PER_24 unchecked, then busy; a checked start from it still passes.
+  for (let i = 0; i < TV.TV_OPEN_PER_24 - TV.TV_OPEN_PER_IPV4; i++) assert.equal(typeof t.start(`198.51.101.${100 + i}`, 'a'.repeat(64), Date.now(), null, false), 'object', `open ${i}`);
+  assert.equal(t.start('198.51.101.250', 'a'.repeat(64), Date.now(), null, false), 'busy');
+  assert.equal(typeof t.start('198.51.101.250', 'a'.repeat(64), Date.now(), null, true), 'object', 'a TV that solved the check');
+  // IPv6: TV_OPEN_PER_IP per /64 and TV_OPEN_PER_48 per /48.
+  for (let i = 0; i < TV.TV_OPEN_PER_48; i++) assert.equal(typeof t.start(`2001:db8:66:${i}::1`, 'a'.repeat(64), Date.now(), null, false), 'object');
+  assert.equal(t.start('2001:db8:66:ff::1', 'a'.repeat(64), Date.now(), null, false), 'busy');
+  assert.equal(typeof t.start('2001:db8:66:ff::1', 'a'.repeat(64), Date.now(), null, true), 'object');
+  // The whole table: TV_OPEN_MAX unchecked codes at most, the rest is for checked ones.
+  for (let i = 0; t.start(`10.${(i >> 8) & 255}.${i & 255}.1`, 'a'.repeat(64), Date.now(), null, false) !== 'full'; i++) assert.ok(i < 3 * TV.TV_OPEN_MAX, 'never stops');
+  let open = 0;
+  for (const e of t.codes.values()) if (!e.checked && !e.used && e.expiresAt > Date.now()) open++;
+  assert.equal(open, TV.TV_OPEN_MAX);
+  assert.equal(typeof t.start('192.0.2.1', 'a'.repeat(64), Date.now(), null, true), 'object');
+  // Where the gate is off (local dev) a start without a token is a checked one.
+  const dev = makeEnv();
+  await post(dev.env, '/api/auth/tv/start', { ip: '198.51.102.1', body: {} });
+  assert.equal([...dev.obj.tv.codes.values()][0].checked, true);
 });

@@ -84,8 +84,11 @@
  *   POST /experimental/set { userId, enabled }                       -> ExperimentalAnswer | 404
  *   POST /presets/upsert  { userId, preset }                         -> ExperimentalAnswer | 400 bad_preset | 409 too_many | 404
  *   POST /presets/delete  { userId, id }                             -> ExperimentalAnswer | 400 bad_preset | 404
- *   POST /tv-start        { ip, secret, where? }                     -> { code, expiresAt } | 503 busy (the table, or the
- *                                                                     caller's /48 or /24, is full)
+ *   POST /tv-start        { ip, secret, where?, checked? }           -> { code, expiresAt } | 503 busy (the table, or the
+ *                                                                     caller's /48 or /24, is full; `checked` false: started
+ *                                                                     without a solved check, tvCodes.ts TV_OPEN_* too)
+ *   POST /tv-renew        { code, secret, ip, where? }               -> { code, expiresAt } (a new code, the same secret) |
+ *                                                                     409 tv_code_used | 410 tv_code_expired | 503 busy
  *   POST /tv-info         { code, userId, username, ip, phone? }     -> TvInfo (where the TV is, the phone's network and
  *                                                                     country beside it) | the refusals of /tv-confirm
  *   POST /tv-confirm      { code, userId, username, ip }             -> { ok } | 404 tv_code_wrong | 410 tv_code_expired
@@ -748,9 +751,19 @@ export class AccountsDO extends DurableObject<Env> {
       }
       case '/tv-start': {
         if (!isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
-        const r = this.tv.start(b.ip, b.secret, now, whereOf(b.where));
+        // `checked` false: started without a solved check (a remote cannot answer one): the TV_OPEN_* caps count it too.
+        const r = this.tv.start(b.ip, b.secret, now, whereOf(b.where), b.checked !== false);
         if (r === 'busy') return error(503, 'busy', 'Demasiados códigos desde tu red, inténtalo en unos minutos');
         return r === 'full' ? error(503, 'busy', 'Demasiados códigos ahora, inténtalo en un minuto') : json(r);
+      }
+      case '/tv-renew': {
+        const code = tvCode(b.code);
+        if (code === null || !isHex(b.secret, 64) || typeof b.ip !== 'string' || b.ip.length > 64) return error(400, 'bad_request');
+        const r = this.tv.renew(code, b.secret, b.ip, now, whereOf(b.where));
+        if (r === 'used') return error(409, 'tv_code_used', 'Ese código ya se usó');
+        if (r === 'expired') return error(410, 'tv_code_expired', 'El código caducó');
+        if (r === 'busy' || r === 'full') return error(503, 'busy', 'Demasiados códigos desde tu red, inténtalo en unos minutos');
+        return json(r);
       }
       case '/tv-info': {
         const code = tvCode(b.code);

@@ -413,14 +413,12 @@ test('auth-1: a TV\'s sign-in lasts 30 days from its start, refreshed or not; ap
 
 // ---- auth-1 / client-1 / tv-1: where the TV is, Turnstile; auth-7 / cost-7 / client-3: the code table ----
 
-test('auth-1 / auth-7: POST /api/auth/tv/start asks a solved Turnstile check when the gate is on', async () => {
+test('auth-1 / auth-7: POST /api/auth/tv/start asks a solved Turnstile check when the gate is on (a TV without one: the open caps of sign-in PR 6, server/test/oauth-email.test.mjs)', async () => {
   const { env } = makeEnv({ TURNSTILE_DISABLED: '0', TURNSTILE_SECRET: 'ts-secret', TURNSTILE_SITEKEY: 'ts-site' });
   const ip = ips();
-  for (const body of [{}, { turnstileToken: 'bad-token' }]) {
-    const r = await post(env, '/api/auth/tv/start', { ip: ip(0), body });
-    assert.equal(r.status, 403, JSON.stringify(body));
-    assert.equal(r.json.error, 'turnstile_failed');
-  }
+  const r = await post(env, '/api/auth/tv/start', { ip: ip(0), body: { turnstileToken: 'bad-token' } });
+  assert.equal(r.status, 403);
+  assert.equal(r.json.error, 'turnstile_failed');
   const ok = await post(env, '/api/auth/tv/start', { ip: ip(0), body: { turnstileToken: 'good-token' } });
   assert.equal(ok.status, 200);
   assert.match(ok.json.code, /^[A-Z2-9]{6}$/);
