@@ -81,7 +81,12 @@ export const LOBBY_MSG_BURST = 20;
 const LOBBY_MSG_REFILL_PER_MS = 5 / 1000;
 export const LOBBY_OVER_BURST = 40;
 const LOBBY_OVER_REFILL_PER_MS = 1 / 1000;
-/** The directory row is upserted at most this often; a change in between goes out with the next alarm (alarmBy). */
+/**
+ * The directory row is upserted at most this often; a change in between goes out with the next alarm
+ * (alarmBy). The window counts from the last row with somebody in the lobby: the row of a lobby with
+ * no member (create, before its host's socket) is unlisted and starts no window, so the host's row
+ * goes out the moment its socket is in (publish).
+ */
 export const PUBLISH_MIN_MS = 5_000;
 /**
  * INICIAR at most this often (each one reaches the region's matchmaker, a lock check of every busy
@@ -344,9 +349,11 @@ export class LobbyDO extends DurableObject<Env> {
   private closed = false;
   /** Per-socket message budget (in memory: a wake-up starts every socket full). */
   private readonly buckets = new WeakMap<WebSocket, { tokens: number; over: number; at: number }>();
-  /** The last directory payload sent and when (publish); a change within PUBLISH_MIN_MS waits for the alarm. */
+  /** The last directory payload sent, and when the last listed one went (publish); a change within PUBLISH_MIN_MS waits for the alarm. */
   private pubKey: string | null = null;
   private pubAt = -Infinity;
+  /** When the row held back by the window is due (the alarm must come by then), else null. */
+  private pubDue: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -410,7 +417,7 @@ export class LobbyDO extends DurableObject<Env> {
     };
     await this.save();
     await this.ctx.storage.setAlarm(now + ALARM_MS);
-    await this.publish();
+    await this.publish(); // unlisted until the host's socket is in (publish)
     return json({ ok: true });
   }
 
@@ -722,9 +729,10 @@ export class LobbyDO extends DurableObject<Env> {
     }
     await this.save();
     await this.publish(true); // directory heartbeat (and any change publish held back)
-    // The next heartbeat, or the next grace to end when that comes first.
+    // The next heartbeat, or the next grace to end, or a row held back meanwhile (a change that came
+    // in while the heartbeat's upsert was on its way: its alarmBy is overwritten here), whichever is first.
     const graceEnd = Math.min(...rec.members.map((m) => (m.awayAt !== undefined ? m.awayAt + LOBBY_GRACE_MS : Infinity)));
-    await this.ctx.storage.setAlarm(Math.min(now + ALARM_MS, graceEnd));
+    await this.ctx.storage.setAlarm(Math.min(now + ALARM_MS, graceEnd, this.pubDue ?? Infinity));
   }
 
   /** The alarm at `at` at the latest (an earlier one stays). */
@@ -933,22 +941,35 @@ export class LobbyDO extends DurableObject<Env> {
    * The lobby's row in LobbyDirectoryDO, the one object every lobby, list, join and population count
    * shares: sent when it changed, at most once every PUBLISH_MIN_MS (a change in between is sent by
    * the alarm, armed for then); `heartbeat` (the alarm) sends it whatever it is, keeping it fresh.
+   *
+   * A lobby nobody is in (create, before its host's socket; the last member gone while an admit is
+   * pending) is sent unlisted: no public row with 0 players and no host, and none in the population
+   * count, for as long as it lasts (a host that never connects: until the idle close). Its code still
+   * resolves: the row exists since /allocate. Such a row waits for the window like any other but
+   * starts none, so the host's row, a few milliseconds after create, goes out at once instead of 5 s
+   * later with the alarm (plus the Worker's 3 s list cache). No flood repeats it: a lobby with no
+   * member has no socket to send frames, and each new member takes a join. (The game's own CREATE
+   * LOBBY AND SHARE creates its lobby private, and SETTINGS makes it public later: the host's row
+   * going out at once matters to a lobby created public through the API.)
    */
   private async publish(heartbeat = false): Promise<void> {
     const rec = this.rec;
     if (!rec || this.closed) return;
-    const payload = { code: rec.code, lobbyId: rec.lobbyId, visibility: rec.settings.visibility, summary: this.summary() };
+    const listed = rec.members.length > 0;
+    const payload = { code: rec.code, lobbyId: rec.lobbyId, visibility: listed ? rec.settings.visibility : 'private', summary: this.summary() };
     const key = JSON.stringify(payload);
     const now = Date.now();
     if (!heartbeat) {
       if (key === this.pubKey) return;
       if (now - this.pubAt < PUBLISH_MIN_MS) {
-        await this.alarmBy(this.pubAt + PUBLISH_MIN_MS);
+        this.pubDue = this.pubAt + PUBLISH_MIN_MS;
+        await this.alarmBy(this.pubDue);
         return;
       }
     }
     this.pubKey = key;
-    this.pubAt = now;
+    if (listed) this.pubAt = now;
+    this.pubDue = null;
     await this.directory('/upsert', payload);
   }
 
