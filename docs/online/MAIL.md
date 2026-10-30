@@ -184,3 +184,22 @@ such as `news.turbo-gol.com` signed with that provider's DKIM key at `d=news.tur
 alignment passes the inherited `p=reject`), so the reputation of transactional mail stays apart.
 The audience is the accounts that opted in; unsubscribing goes through the Worker, with a
 `List-Unsubscribe` one-click URL that carries an opaque id and can only unsubscribe.
+
+What exists already (sign-in PR 13; nothing sends news yet):
+
+- The consent log (`consents`, append-only): the newest `news` row of an account is its choice.
+  The sign-up's and the OAuth confirm step's switch (at NO) write a grant only when it is on, and
+  PERFIL's "News by email" switch (`POST /api/me/consent`, shown with a verified email only)
+  writes each change. A deletion request writes a withdrawal.
+- Every grant gives the account a `users.unsub_id`: 16 random bytes in base64url, with nothing of
+  the account in it.
+- `POST /api/news/unsubscribe` withdraws the news of that id's account and replaces the id, so an
+  older mail's link does nothing. It answers `200 { ok: true }` for any id. It takes two forms:
+  - RFC 8058's one-click: `?u=<unsub_id>` with the body `List-Unsubscribe=One-Click`, with no
+    Origin needed;
+  - the page's JSON `{ u }` from `/account#unsub=<unsub_id>`, which unsubscribes on a button press.
+- A news mail would then carry
+  `List-Unsubscribe: <https://turbo-gol.com/api/news/unsubscribe?u=<unsub_id>>`,
+  `List-Unsubscribe-Post: List-Unsubscribe=One-Click` and a footer link to
+  `https://turbo-gol.com/account#unsub=<unsub_id>`. It goes only to accounts whose newest news row
+  is a grant, that have a verified email and that have no deletion pending.

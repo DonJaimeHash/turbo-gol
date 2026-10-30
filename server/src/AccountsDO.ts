@@ -156,6 +156,12 @@
  *                                                                     maintainer_account / deletion_pending { purgeAt } |
  *                                                                     429 / 503 (M9 cannot go: nothing changes)
  *   POST /delete-cancel   { token }                                  -> { ok } | 410 link_invalid (M9's link)
+ *   The news consent (sign-in PR 13, the design's §2.11 and §3.14; no news is sent yet):
+ *   POST /me-consent      { userId, kind: 'news', granted }          -> { news, terms } | 400 bad_consent | 404 | 409
+ *                                                                     email_required (a grant needs a verified address) /
+ *                                                                     deletion_pending { purgeAt } | 429 (NEWS_CHANGES)
+ *   POST /news-unsubscribe { u }                                     -> { ok: true } for any id (that id's account: its
+ *                                                                     news withdrawn, a new unsub_id)
  *     While a deletion is pending, 409 deletion_pending { purgeAt } answers /auth-finish and /oauth
  *     (unless they carry `cancelDeletion`: the deletion goes and they sign in), /ranked-check,
  *     /tv-info, /tv-confirm and /dev-signin; /reset, /email-undo and /recover set the password and
@@ -463,6 +469,13 @@ export const NODES_TELL_TIMEOUT_MS = 5_000;
  * notices, 5 a day, and its /api/me/* mail, 10) bind first.
  */
 export const DELETION_REQUESTS: WindowCap = { day: 5 };
+
+/**
+ * Changes of PERFIL's news switch per account in 24 hours (key 'nc'): each one is a row of the
+ * consent log, which only grows, so a script flipping it cannot grow it without end. A person
+ * flips it a few times; a press that changes nothing (the same state again) costs no slot.
+ */
+export const NEWS_CHANGES: WindowCap = { day: 20 };
 
 /** 409 deletion_pending { purgeAt } (§2.10): only ever after the account was proved (a password, a provider, a mailbox). */
 function deletionPending(purgeAt: number, extra: Record<string, unknown> = {}): Response {
@@ -1105,8 +1118,49 @@ export class AccountsDO extends DurableObject<Env> {
         return this.meDelete(b, now);
       case '/delete-cancel':
         return this.deleteCancel(b, now);
+      // The news consent and unsubscribing (sign-in PR 13).
+      case '/me-consent':
+        return this.meConsent(b, now);
+      case '/news-unsubscribe':
+        return this.newsUnsubscribe(b, now);
     }
     return null;
+  }
+
+  // ---- the news consent and unsubscribing (sign-in PR 13: the design's §2.11, §3.14) ------------------
+
+  /**
+   * POST /me-consent { userId, kind: 'news', granted } -> { news, terms } (§2.11): the refusals of
+   * accountStore.ts newsBlock first (a grant without a verified address: 409 email_required; with a
+   * deletion pending: 409 deletion_pending), then, for a press that changes the state, one slot of
+   * NEWS_CHANGES (429, nothing written), then the row (setNews). Only the news kind for now: the
+   * terms' kind comes with the terms of service.
+   */
+  private async meConsent(b: Record<string, unknown>, now: number): Promise<Response> {
+    if (typeof b.userId !== 'string' || b.userId.length > 64 || b.kind !== 'news' || typeof b.granted !== 'boolean') return error(400, 'bad_consent', 'Consentimiento inválido');
+    const key = await this.throttleKey('nc', b.userId);
+    // ---- one step from here ----
+    const s = this.store;
+    const why = s.newsBlock(b.userId, b.granted);
+    if (why === 'no_user') return error(404, 'no_user');
+    if (why === 'email_required') return error(409, 'email_required', 'Primero agrega un correo a tu cuenta.');
+    if (why === 'deletion_pending') return deletionPending(s.deletionAt(b.userId));
+    if (why === 'write') {
+      const capped = this.takeCaps([{ key, cap: NEWS_CHANGES, code: 'rate_limited' }], now);
+      if (capped !== null) return capped;
+    }
+    const r = s.setNews(b.userId, b.granted, now);
+    return typeof r === 'string' ? error(409, r) : json(r);
+  }
+
+  /**
+   * POST /news-unsubscribe { u } -> { ok: true } (§2.11), for any id: an account's (its news
+   * withdrawn, its id replaced), an unknown, spent or malformed one (nothing changes). One answer, so
+   * ids cannot be tested.
+   */
+  private newsUnsubscribe(b: Record<string, unknown>, now: number): Response {
+    if (typeof b.u === 'string') this.store.unsubscribe(b.u, now);
+    return json({ ok: true });
   }
 
   // ---- account deletion (sign-in PR 12: the design's §2.10, §3.13, §4.4 M9) ---------------------------
