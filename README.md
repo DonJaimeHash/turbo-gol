@@ -22,7 +22,9 @@ font (Barlow Condensed, SIL Open Font License) for the titles.
   - server-hosted matches with client prediction;
   - several playlists at once and region choice;
   - custom lobbies: public list, join by code, password, team picks.
-- **Accounts and ranked**: username + password (optional Google / Discord). Ranked play gives a rating
+- **Accounts and ranked**: an email confirmed with a code, plus a password (optional Google /
+  Discord); one email, one account. Accounts made with a username before keep it until the cutoff
+  the owner announces. Ranked play gives a rating
   per playlist (Weng-Lin / OpenSkill model), with placement games, tiers, leaderboards and abandon
   penalties. Guests can play everything except ranked.
 - **Experimental features** (signed-in players, Settings > Experimental): the Super low graphics

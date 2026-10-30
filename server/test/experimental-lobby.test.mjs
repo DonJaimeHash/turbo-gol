@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import { makeAccount } from './helpers/accounts.mjs';
 
 const DO_STUB = 'data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 const WASM_STUB = 'data:text/javascript,export const createHostArena = () => { throw new Error("no wasm in this test"); };';
@@ -493,8 +494,7 @@ test('AccountsDO: a ranked result, cancel, lock or training upload that carries 
   const obj = new AccountsDO(ctx, env);
   env.ACCOUNTS = { idFromName: (n) => ({ n }), get: () => ({ fetch: (url, init) => obj.fetch(new Request(url, init)) }) };
   const H = (c) => c.repeat(64).slice(0, 64);
-  const PW = { hash: H('a'), salt: H('b').slice(0, 32), iter: 100000 };
-  const ids = ['ana', 'beto'].map((n, i) => obj.store.register(n, PW, [], H(String(i)), Date.now()).userId);
+  const ids = ['ana', 'beto'].map((n, i) => makeAccount(obj.store, n, { now: Date.now(), refresh: H(String(i)) }).userId);
   const secret = await internalSecret(SECRET);
   const post = async (path, body) => {
     const res = await obj.fetch(new Request('https://accounts' + path, { method: 'POST', headers: { [INTERNAL_HEADER]: secret, 'content-type': 'application/json' }, body: JSON.stringify(body) }));

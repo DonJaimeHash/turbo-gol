@@ -32,7 +32,8 @@ server/
                         and the cron's /healthz probe
   src/wasm.ts           instantiates ../../src/sim/wasm/rocketsim.wasm in workerd
   src/mail.ts           the mailer (docs/online/MAIL.md): chooseMailer (live only with EMAIL, MAIL_LIVE=1 and a host
-                        that is not loopback; the stub otherwise), linkOrigin, deliver, the dev outbox. Nothing calls it yet
+                        that is not loopback; the stub otherwise), linkOrigin, deliver, the dev outbox. The email
+                        accounts' routes (accountRoutes.ts) send through it, after they answer (waitUntil)
   src/mailTemplates.ts  every mail (M1-M12) in es and en, text and html; src/mailCaps.ts: lanes, caps, the kill flag
   test/auth.test.mjs    JWT unit tests            (node, no server needed)
   test/roomHost.test.mjs RoomHost unit tests       (node, fake sim, no wasm needed)
@@ -85,13 +86,13 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | Name | Where | Meaning |
 |---|---|---|
 | `JWT_SECRET` | secret (`.dev.vars` locally) | signs sessions, tickets and the Worker<->DO internal header |
-| `TURNSTILE_SECRET` | secret, required on a deploy | when set, `POST /api/guest` and `POST /api/auth/register` require a valid Turnstile token (outside local dev a missing secret answers 503 `turnstile_unconfigured`) |
+| `TURNSTILE_SECRET` | secret, required on a deploy | when set, `POST /api/guest`, the sign-ins (`/api/auth/signin`, the legacy `login` and `recover`), `POST /api/auth/signup/start`, `POST /api/auth/forgot` and `POST /api/auth/tv/start` require a valid Turnstile token (outside local dev a missing secret answers 503 `turnstile_unconfigured`) |
 | `TURNSTILE_SITEKEY` | var (public), paired with the secret | the widget sitekey, handed to the browser by `GET /api/config`; empty = no widget (local dev) |
-| `EMAIL` | `send_email` binding (Email Service) | the mailer's (`src/mail.ts`, the only file that reads it; [docs/online/MAIL.md](../docs/online/MAIL.md)). No `"remote": true`: `wrangler dev` then simulates it locally (a file, no mail, no login), and a deploy binds the real service. Nothing calls it yet |
-| `MAIL_LIVE` | secret, production only | `1` lets `chooseMailer` send real mail, with `EMAIL` and on a host that is not loopback (so never under `wrangler dev`); unset = the stub, which sends nothing. Never in `wrangler.jsonc`, `.dev.vars` or `.env` (a test checks the committed files) |
+| `EMAIL` | `send_email` binding (Email Service) | the mailer's (`src/mail.ts`, the only file that reads it; [docs/online/MAIL.md](../docs/online/MAIL.md)). No `"remote": true`: `wrangler dev` then simulates it locally (a file, no mail, no login), and a deploy binds the real service. The email routes send through it once `MAIL_LIVE` is set |
+| `MAIL_LIVE` | secret, production only | `1` lets `chooseMailer` send real mail, with `EMAIL` and on a host that is not loopback (so never under `wrangler dev`); unset = the stub, which sends nothing, and the email routes (sign-up, forgot, a password link, "confirm it's you" by code) answer 503 `email_unconfigured` while `/api/config` says `auth.email: false`. Never in `wrangler.jsonc`, `.dev.vars` or `.env` (a test checks the committed files) |
 | `MAIL_FROM`, `MAIL_LINK_ORIGIN` | vars | the sender (`Turbogol <no-reply@turbo-gol.com>`) and the origin of every link in a mail (`https://turbo-gol.com`; a loopback host uses its own) |
 | `EMAIL_DAILY_CAP` | var | the day's mail across all lanes (default 100): sign-up mail stops at 60 %, account mail at 90 %, notices at 100 %. Set it to 80 % of the Email Service quota |
-| `DEV_AUTH` | your own `.dev.vars` only | `1` opens the stub's outbox (`GET /api/dev/mail`, once mounted) on a loopback host; closed anywhere else whatever its value |
+| `DEV_AUTH` | your own `.dev.vars` only | `1` opens the dev-only routes on a loopback host: the dev sign-in (`POST /api/dev/signin`, PERFIL's ENTRAR (DEV)) and the stub's outbox (`GET /api/dev/mail`: the codes and links the stub "sent"); closed anywhere else whatever its value (404, as any unknown route). With `TG_LAN=1` the Vite proxy makes the network's requests loopback ones, so a script on that network gets in too (CONTRIBUTING.md). Never in `wrangler.jsonc` or any committed file (`test/dev-signin.test.mjs` checks them) |
 | `email_off` | KV `FLAGS` key | `1` / `true` / `on` stops every mail lane, no deploy (see docs/online/MAIL.md) |
 | `VITE_ORIGINS` | var, optional | comma-separated allowed browser origins for CORS and WebSocket `Origin`; empty = any (`*`). Under `wrangler dev` (the Worker reached on a loopback host) a loopback page origin such as the Vite dev server on any port is always accepted, so the committed production list does not block local play |
 | `MATCH_LENGTH_SECONDS` | var | regulation length (300) |
@@ -103,6 +104,7 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `NODE_CONTROL_PUBLIC_KEY` | var | its public half, handed to every node at registration; a pair that does not match places nothing (ALERT) |
 | `NODE_TRUSTED_OPERATORS` | secret, optional | the project's account ids, comma-separated: their nodes are trusted (at most 2 each) and only they create node tokens |
 | `NODES_PUBLIC_BASE` | var | the origin the nodes and their installers reach `/nodes/*` at (`https://turbo-gol.com`) |
+| `CF_ZONE_ID`, `CF_PURGE_TOKEN` | var and secret, optional | the zone id and an API token with only Zone > Cache Purge: a replay delist (`POST /nodes/admin/delist`) then purges the view in every Cloudflare location, not only the maintainer's (`docs/replays.md`) |
 | `NODE_ALERT_WEBHOOK` | secret, optional | the webhook URL of a staff-only Discord channel: every `ALERT` line of the node control plane is posted there too (see "Community nodes"); unset = only the logs |
 | `RL_10`, `RL_30`, `RL_60`, `RL_120`, `RL_600`, `RL_1200` | Workers Rate Limiting (`ratelimits` in `wrangler.jsonc`) | the counters behind `src/limits.ts`'s table, each named after its limit per 60 s; they count per Cloudflare location across all its isolates (approximately). `namespace_id` must be unique in the Cloudflare account; `wrangler dev` simulates them. Without them only the in-isolate counts apply |
 | `ASSETS` | Workers Assets binding | the Vite build (`../dist`); the Worker falls back to `env.ASSETS.fetch()` for any path outside `/api`, `/ws`, `/room`, `/lobby` and `/nodes` it still receives |
@@ -119,7 +121,8 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `GET /room/:roomId` | same, with a role `peer` ticket whose `mid` is the room id | 101 to the RoomDO: first message `RoomWelcome` (JSON; see `src/net/p2p/protocol.ts`) |
 | `GET /api/health` | | `{ ok, version, protocol }` |
 | `GET /api/time` | | `{ now }` |
-| `GET /api/config` | | public client configuration: `{ turnstileSiteKey, protocol, version, region, autoRegion, regions, oauth, accounts }` (the sitekey is `null` when Turnstile is off; `oauth` lists the configured sign-in providers) |
+| `GET /api/config` | | public client configuration: `{ turnstileSiteKey, protocol, version, region, autoRegion, regions, oauth, accounts, botFillMs, auth: { devSignIn, email } }` (the sitekey is `null` when Turnstile is off; `oauth` lists the configured sign-in providers; `auth.devSignIn` is true only where the dev sign-in is open; `auth.email` is true where the flows that send mail may show: live mail, or the stub's outbox on a loopback host, links with an origin and `email_off` unset) |
+| `POST /api/dev/signin`, `GET /api/dev/mail` | `{ name }` (1-32 of `A-Z a-z 0-9 _ -`) | local work only (`DEV_AUTH=1`, a loopback host, no Origin or a loopback one; anywhere else 404 `not_found`, as an unknown route, never rate-counted): the account of that dev name, made the first time (`<name>@dev.invalid`, verified; its username the name when it is a valid free one, else `Dev` and digits) as an `AccountSession` plus the refresh cookie; and the stub mailer's outbox, newest first |
 | `GET /api/where` | | `{ edgeColo, country, city?, asn?, ip }`: the Cloudflare colo (IATA code) that served the request and the client address masked to /24 (IPv6 /48), from `request.cf`; for the deploy measurements. The colo the *match* runs in is `Welcome.hostColo` (the MatchDO reads it once per isolate from `cloudflare.com/cdn-cgi/trace`, 5 s cap, `unknown` on failure) |
 | `GET /nodes/whoami` | | `{ ip }`: the address a node installer is seen from (`CF-Connecting-IP`) |
 | `GET /nodes/releases/channel`, `GET /nodes/releases/<key>` | | the node releases in R2 `NODE_RELEASES`: the channel (`{ stable, minimum }` when both read `X.Y.Z`, 404 while there is none, else 503; `no-store`), `<version>/<file>` (immutable) and the root files such as `launcher.mjs` and `install.sh` (`no-cache`, ETag); never a listing, never a key outside `src/nodeRoutes.ts`'s pattern |
@@ -127,9 +130,9 @@ boots and plays online against the same origin without Vite, which is exactly wh
 | `POST /nodes/tokens` | `{ region, name? }`, Bearer account session of a `NODE_TRUSTED_OPERATORS` account | a one-time node token (1 h) and its Linux install line; 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 10 per account per day |
 | `GET /nodes/mine` | Bearer account session | the caller's own nodes (30 per account per minute) |
 | `GET /nodes/status` | | the public list of nodes (no addresses), cached 10 s |
-| `GET /nodes/replays[?before=<ms>]` | | the public replay list (`src/net/replays.ts`, `docs/replays.md`): the matches the community nodes played and the control plane settled without voiding them, last 30 days, newest first, 30 a page; names from the control plane, no account or node ids; the first page cached 30 s per isolate; 60 per address per minute |
-| `GET /nodes/replays/<id>/view` | | one listed match's replay for the browser viewer (`replay.html`): the node's upload, its SHA-256 checked against the index, the header rebuilt from the control plane's record (`src/replayIndex.ts`); 404 `no_replay` for a void, unlisted, expired or oversized one; edge-cached, `immutable`; 30 per address per minute |
-| `GET /nodes/admin/nodes`, `POST /nodes/admin/status`, `/drain`, `/update`, `/reprobe`, `/grant`, `/revoke`, `/unfreeze` | Bearer account session of a `NODE_TRUSTED_OPERATORS` account; `{ nodeId, status, reason? }`, `{ nodeId, reason? }`, no body, `{ nodeId }`, `{ account, item }`, `{ account, item }`, `{ account }` | the maintainers' routes (see "Community nodes"): 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 30 per account per minute; every call is an `ALERT` naming the account. `grant` / `revoke` / `unfreeze` act on an account's items and wallet in AccountsDO (`account`: its 16-hex id; `item`: a catalog id of `nodes/control-plane/shop.ts`, 400 `unknown_item` otherwise): a grant is a claim that costs nothing, whatever the item's status; a revoke gives a claim's cost back (and the account drives the default car if it was that one); an unfreeze lets a frozen wallet claim again |
+| `GET /nodes/replays[?before=<cursor>]` | | the public replay list (`src/net/replays.ts`, `docs/replays.md`): the matches the community nodes played and the control plane settled without voiding them, released by settle hour (every match of hour H together at H + 2 h, one to two hours after each ended, and gone together at H + 30 days: polling shows no settle time), by the hour (rounded, never the minute) and then the match id, 30 a page; names from the control plane (`Jugador N` for an account that hides its name), no account or node ids; `next` is a cursor the Worker signed (anything else is the first page); the first page cached 30 s per isolate, a later one 5 minutes at the edge; `X-Robots-Tag: noindex`; 120 object calls per network and 600 per IPv6 /48 a minute (`src/limits.ts`) |
+| `GET /nodes/replays/<id>/view` | | one served match's replay for the browser viewer (`replay.html`): the node's upload, its SHA-256 checked against the index, the header rebuilt from the control plane's record (`src/replayIndex.ts`: no account or node id, no start time, hidden names); `x-replay-verified: 1` when a verifier checked it, else `0`; 404 `no_replay` for a void, unlisted, too recent (its hour not released yet), expired, delisted or oversized one (kept 5 minutes at the edge; a day, with an `ALERT` log line, for a listed one that fails the checks); edge- and browser-cached 3 hours; `X-Robots-Tag: noindex`; 120 object calls per network and 600 per IPv6 /48 a minute |
+| `GET /nodes/admin/nodes`, `POST /nodes/admin/status`, `/drain`, `/update`, `/reprobe`, `/grant`, `/revoke`, `/unfreeze`, `/delist` | Bearer account session of a `NODE_TRUSTED_OPERATORS` account; `{ nodeId, status, reason? }`, `{ nodeId, reason? }`, no body, `{ nodeId }`, `{ account, item }`, `{ account, item }`, `{ account }`, `{ matchId, reason? }` | the maintainers' routes (see "Community nodes"): 401, 403 `account_required` for a guest, 403 `not_trusted` for any other account; 30 per account per minute; every call is an `ALERT` naming the account. `grant` / `revoke` / `unfreeze` act on an account's items and wallet in AccountsDO (`account`: its 16-hex id; `item`: a catalog id of `nodes/control-plane/shop.ts`, 400 `unknown_item` otherwise): a grant is a claim that costs nothing, whatever the item's status; a revoke gives a claim's cost back (and the account drives the default car if it was that one); an unfreeze lets a frozen wallet claim again. `delist` takes a match out of the public replays (its index row and R2 object; the view's edge copy purged here, and in every location with `CF_ZONE_ID` and `CF_PURGE_TOKEN`; `docs/replays.md`) |
 | `GET /nodes/shop`, `POST /nodes/shop/claim` | Bearer account session; `{ item }` (or `itemId`) | aliases of `GET /api/me/shop` and `POST /api/me/shop/claim` (the hosts' shop lives in AccountsDO): answered with or without the node settings; 401, 403 `account_required` for a guest |
 | anything else | `GET` | the game (Workers Assets from `../dist`; unknown paths get `index.html`) |
 
@@ -204,7 +207,7 @@ its first deploy (local dev works with any of them):
 | `wrangler.jsonc` -> `vars.VITE_ORIGINS` | `https://<your-host>` (comma-separated if several): the origins allowed for CORS / WebSocket `Origin`; empty = any |
 | secrets `GOOGLE_CLIENT_ID` / `_SECRET`, `DISCORD_CLIENT_ID` / `_SECRET` | optional OAuth sign-in (docs/online/ACCOUNTS.md) |
 | secret `JWT_SECRET` | a long random string (`openssl rand -hex 32`) |
-| secret `TURNSTILE_SECRET` | the Turnstile **secret** of the same widget; required: without it `POST /api/guest` and `POST /api/auth/register` answer 503 outside local dev |
+| secret `TURNSTILE_SECRET` | the Turnstile **secret** of the same widget; required: without it `POST /api/guest` and every route that asks for a token (the sign-ins, the email sign-up, forgot, the TV start) answer 503 outside local dev |
 | secrets `TURN_KEY_ID`, `TURN_KEY_TOKEN` | optional (phase 2): a Realtime TURN key (dashboard -> Realtime -> TURN); without them P2P pairs that need a relay cannot connect (STUN only) |
 | `wrangler.jsonc` -> `r2_buckets`, `vars.NODE_CONTROL_PUBLIC_KEY`, `vars.NODES_PUBLIC_BASE` | community nodes (see "Community nodes"): your bucket names, your control key's public half and your origin; a deploy fails while a bound bucket does not exist, so a fork that runs no nodes may drop the two buckets |
 | `wrangler.jsonc` -> `triggers` | the nodes' health check every 5 minutes; without the node settings a run does nothing, so a fork may keep it or drop it |
@@ -276,7 +279,8 @@ The control plane of the community nodes (`src/NodeRegistryDO.ts` around `../nod
 runs in this Worker, one SQLite object near São Paulo. Before the first deploy that carries it:
 
 ```sh
-npx wrangler r2 bucket create turbogol-node-replays      # plus a 30-day lifecycle rule on it
+npx wrangler r2 bucket create turbogol-node-replays      # plus its 30-day lifecycle rule:
+npx wrangler r2 bucket lifecycle add turbogol-node-replays expire-30d --expire-days 30 --force
 npx wrangler r2 bucket create turbogol-node-releases     # nodes/github/workflows/node-release.yml uploads the releases here
 npx wrangler versions secret put NODE_CONTROL_PRIVATE_KEY   # the privateKey whose public half is vars.NODE_CONTROL_PUBLIC_KEY
 npx wrangler versions secret put NODE_TRUSTED_OPERATORS     # the project's account ids, comma-separated
@@ -390,6 +394,7 @@ lands within a minute or two.
 | `matchmaking_off` | `POST /api/queue` and `POST /api/lobbies`: 503 `matchmaking_off` (no new match, room or lobby) | matches and lobbies already open, sign-in, the menus |
 | `do_disabled` | every new socket to a MatchDO, RoomDO or LobbyDO (`/ws`, `/room`, `/lobby`: 503) and the P2P queue; with the nodes on for a player, its server and ranked queues wait for a node instead | node matches; sockets already open |
 | `vm_disabled` | no new match goes to a community node, whatever `nodes_on` says | the control plane and the nodes' sockets; matches already on a node |
+| `replays_off` | the public replays only: `GET /nodes/replays` and `GET /nodes/replays/<id>/view` answer 404, their edge-cached copies too (read once per isolate every 30 s), the object never asked | the nodes, the verifiers' signed replay routes, everything else |
 | `nodes_off` | every `/nodes/*` route that would reach the NodeRegistryDO: registration, the control socket's upgrade, replay uploads and downloads, tokens, `/nodes/mine`, `/nodes/status`, the replay list and view, the maintainers' routes (503 `nodes_off`, the object never asked), and the cron's health check. Set `vm_disabled` with it: sockets already open stay, and the matchmaker still reaches the object directly | the node releases and the installers (edge-cached), the shop aliases (AccountsDO) |
 
 What no flag stops, and what bounds it instead: guest sessions (Turnstile and the per-network
@@ -410,14 +415,20 @@ school or an ISP's CGNAT puts hundreds of players behind one IPv4 address (and a
 one /64), the per-network limits are set for a crowd: 1,200 a minute on the frequent routes, 120 on
 a new guest. The account routes that call the single AccountsDO are limited before the call
 (`src/index.ts` with `limits.ts` `accountGate`): `/api/me`, `/api/ranked/result` and the leaderboard's
-own row 60 a minute per account (and 1,200 per network), password and recovery codes 10, logout
-and refresh 1,200 per network. An IPv6 address is also counted by its /48 on those anonymous
+own row 60 a minute per account (and 1,200 per network), the password routes and "confirm it's you"
+10, logout and refresh 1,200 per network; the email routes 120 a minute per network (`authMail`,
+`authCode`), a new account (the email sign-up's finish and the OAuth confirm step, `authCreate`) 120,
+a TV's code renewal 60 (`tvRenew`), the sign-ins 120 (`login`). The limits that bind for mail, codes and passwords are
+the AccountsDO's own, durable and exact (`src/AccountsDO.ts`, docs/online/MAIL.md): per address,
+per network (an IPv4 address and an IPv6 /64 alike: 200 mails an hour and 600 a day, 200 new accounts a day, and 300 new
+accounts a day per IPv6 /48; the new accounts are one budget for the email sign-up and the OAuth confirm step), per account, and the day's mail lanes. An IPv6 address is also counted by its /48 on those anonymous
 routes (one machine can source a whole /48 of /64s): logout and refresh 1,200 a minute each, and
-the five sign-in routes (login, register, recover, OAuth start and callback) 600 together, so a
+the sign-in routes (the email sign-in and sign-up, forgot, reset, login, recover, OAuth start and
+callback) 600 together, so a
 /48 gets no more than one /64 already had; IPv4 addresses are not counted by it. Logout and refresh never ask the object about a cookie that is not
 a refresh token's shape, and the leaderboard's own row is cached 15 s per account. Inside
 `src/accountRoutes.ts` main's own in-isolate limits per raw address still run after the gate:
-refresh 60, login 30, register 5, recover 10 and OAuth start 20 a minute. For a crowd behind one
+refresh 60, login 30, recover 10 and OAuth start 20 a minute (the email routes add none). For a crowd behind one
 IPv4 address (a school, a CGNAT) those are the ones that bind, not the 1,200 and 120 of the
 table; over IPv6 each device has its own address and the /64 rules bind. The table counts in
 in-isolate windows of its own, so the two never add up. The binding is approximate and per location, not one global count: a determined

@@ -126,7 +126,7 @@ test('oauth: an identity nobody owns makes no account (pending); the confirm ste
   assert.equal(count(), 1);
   const pend = { p: 'google', id: 'g-123', email: null, trust: 'none' };
   assert.equal(store.createFromPending(pend, 'jose_perez', H('2'), NOW), 'username_taken', 'the name is unique (case-insensitive)');
-  const suggest = store.suggestUsername('Jose_Perez');
+  const suggest = store.suggestName('Jose_Perez', 'es');
   assert.equal(ACC.usernameProblem(suggest), null);
   assert.equal(store.usernameTaken(suggest), false);
   const g = store.createFromPending(pend, 'Ana_G', H('2'), NOW);
@@ -262,6 +262,53 @@ test('username / password rules', () => {
   assert.ok(ACC.passwordProblem('password', 'tomi'));
   assert.ok(ACC.passwordProblem('mytomi123', 'Tomi'));
   assert.ok(ACC.passwordProblem('aaaaaaaaaa', 'x'));
+});
+
+test('usernames (the sign-in design, section 5.2): reserved by skeleton, the whole name or one of its parts; ordinary names and shared skeletons pass', () => {
+  const reserved = ['Invitado4821', 'lnvitado', 'B0t', '8ot_99', 'Adm1n', 'R00t', 'Turb0G0l', 'TurboGol_AR', 'Soporte_TG', 'Ana_Admin', 'Team_Rocket', 'juan-dev', 'GUEST_77', 'Moderador9', 'Oficial_AR', 'Servidor1', 'staffer', 'anonimo', 'Mantenedor', 'Owner', 'help'];
+  for (const n of reserved) assert.equal(ACC.usernameIssue(n)?.code, 'usernameReserved', n);
+  for (const n of ['Tomi_10', 'Juan_1', 'Juani', 'Mariana', 'Ana', 'Rocket_99', 'Bobby', 'Teammate', 'Developing']) assert.equal(ACC.usernameIssue(n), null, n);
+  assert.equal(ACC.nameSkeleton('Juan_1'), ACC.nameSkeleton('Juani'), 'a shared skeleton is no reason to refuse');
+  // The owner's #66 rule stays: a name shaped like a web address.
+  for (const n of ['tg-verify.com', 'www.x.gg']) assert.equal(ACC.usernameIssue(n)?.code, 'usernameDomain', n);
+  assert.equal(ACC.usernameProblem('Adm1n'), 'Ese nombre está reservado', "the Worker's Spanish text");
+});
+
+test("passwords: not the email's local part (4 characters or more, its +tag dropped, as typed or as its canon), nor the username", () => {
+  const owner = { username: 'Tomi', email: 'Ana.Perez+tg@GoogleMail.com' };
+  assert.equal(ACC.passwordIssue('una frase larga', owner), null);
+  assert.equal(ACC.passwordIssue('mi ana.perez 2026', owner)?.code, 'passwordHasEmail', 'as typed');
+  assert.equal(ACC.passwordIssue('anaperez2026!', owner)?.code, 'passwordHasEmail', 'as its canon (Gmail without dots)');
+  assert.equal(ACC.passwordIssue('xx tg yy zz', owner), null, 'the tag is not the local part');
+  assert.equal(ACC.passwordIssue('mi clave de bob', { email: 'bob@x.com' }), null, 'a local part under 4 characters is no rule');
+  assert.equal(ACC.passwordIssue('soy tomi 2026', owner)?.code, 'passwordHasUsername');
+  assert.equal(ACC.passwordIssue('soy tomi 2026', 'Tomi')?.code, 'passwordHasUsername', 'a string owner is the username, as before');
+  assert.equal(ACC.passwordProblem('anaperez2026!', owner), 'La contraseña no puede contener tu correo');
+});
+
+test('look-alikes of protected accounts (section 5.2): the trusted and the top of each leaderboard; create and rename refuse them with a free suggestion; an account keeps its own', () => {
+  const { store, db } = makeStore();
+  const owner = store.register('Proyecto', PW, [], H('1'), NOW).userId;
+  const star = store.register('Estrella', PW, [], H('2'), NOW).userId;
+  const juan = store.register('Juan_1', PW, [], H('3'), NOW).userId;
+  const ana = store.register('Ana', PW, [], H('4'), NOW).userId;
+  db.prepare("INSERT INTO ratings (user_id, playlist, season, mu, sigma, games) VALUES (?, '2v2', ?, 40, 3, 20)").run(star, S.SEASON);
+  assert.equal(store.rebuildProtectedSkeletons([owner, 'ffffffffffffffff']), 2, 'the trusted account and the top player; an unknown id adds nothing');
+  assert.equal(store.isLookalike('Pr0yect0', null), true);
+  assert.equal(store.isLookalike('Estre11a', null), true, 'the top of a leaderboard');
+  assert.equal(store.isLookalike('Juani', null), false, 'an ordinary shared skeleton');
+  assert.equal(store.isLookalike('proyecto', owner), false, 'never its own');
+  assert.equal(store.rename(ana, 'Pr0yect0', NOW), 'lookalike');
+  assert.equal(store.rename(juan, 'Juani', NOW).username, 'Juani');
+  assert.equal(store.rename(owner, 'PROYECTO', NOW).username, 'PROYECTO');
+  for (const lang of ['es', 'en']) {
+    const s = store.suggestName('Pr0yect0', lang);
+    assert.match(s, /^Pr0yect\d{4}$/, 'the word without its trailing digits');
+    assert.equal(ACC.usernameIssue(s), null);
+    assert.equal(store.isLookalike(s, null) || store.usernameTaken(s), false);
+    assert.match(store.suggestName('Adm1n', lang), lang === 'es' ? /^Jugador\d{4}$/ : /^Player\d{4}$/, 'a reserved name gets the default word');
+  }
+  assert.match(store.suggestName('Ana', 'es'), /^Ana\d{4}$/, 'a taken name: the same word, new digits');
 });
 
 test('login throttle: free failures, then a doubling lock capped at 15 min; a new window starts over', () => {

@@ -154,7 +154,8 @@ function confirmSheet(menu: Menu, info: PendingInfo, end: (o: PendingOutcome) =>
         end('created');
         return true;
       } catch (e) {
-        if (e instanceof AccountError && e.code === 'username_taken' && e.suggest !== null) {
+        // A taken name, a look-alike of a protected account or a reserved word: the server's free one goes in the field.
+        if (e instanceof AccountError && (e.code === 'username_taken' || e.code === 'name_lookalike' || e.code === 'name_reserved') && e.suggest !== null) {
           name.input.value = e.suggest;
           name.error(e.message);
           return false;

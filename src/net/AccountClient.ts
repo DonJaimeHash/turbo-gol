@@ -71,6 +71,13 @@ export class AccountError extends Error {
   }
 }
 
+/** The confirm step's refusals of a name that carry a free `suggest` (POST /api/auth/pending/create, the email sign-up's rules), and their text. */
+const NAME_REFUSALS: ReadonlyMap<string, 'auth.nameTaken' | 'auth.nameLookalike' | 'auth.nameReserved'> = new Map([
+  ['username_taken', 'auth.nameTaken'],
+  ['name_lookalike', 'auth.nameLookalike'],
+  ['name_reserved', 'auth.nameReserved'],
+] as const);
+
 /** A username / password the client refuses before any request (the same rules as the server). */
 function issueError(issue: AccountIssue, code: 'bad_username' | 'bad_password'): AccountError {
   return new AccountError(t(`account.issue.${issue.code}`, issue.params), 400, code);
@@ -249,6 +256,8 @@ export class AccountClient {
   me: MeInfo | null = null;
   /** Sign-in / sign-out / rename / profile refresh: every `subscribe`r is called (the menus redraw, the Game re-checks). */
   private readonly listeners = new Set<() => void>();
+  /** devSignInOffered's one GET /api/config, once asked. */
+  private devOffered: Promise<boolean> | null = null;
 
   private readonly apiBase: string;
   private readonly fetchFn: FetchLike;
@@ -486,17 +495,19 @@ export class AccountClient {
   /**
    * The confirm sheet's CREAR (POST /api/auth/pending/create): the account, with the name the player
    * chose and the pending identity (and its second one), after a solved anti-bot check. Refusals
-   * reject with their code: username_taken (its `suggest` in the message's place: suggestOf),
-   * email_has_account, already_linked, no_pending.
+   * reject with their code: username_taken, name_lookalike and name_reserved (the email sign-up's
+   * name rules; each with its `suggest`, a free name the sheet puts in the field), email_has_account,
+   * already_linked, no_pending.
    */
   async createAccount(username: string, opts: CreateOptions): Promise<AccountSession> {
     const u = usernameIssue(username);
     if (u !== null) throw issueError(u, 'bad_username');
     const res = await this.callAnonymous('/api/auth/pending/create', { username, news: opts.news, lang: opts.lang, tz: opts.tz });
-    if (res.status === 409) {
+    if (res.status === 409 || res.status === 400) {
       const b = (await res.json().catch(() => null)) as { error?: unknown; suggest?: unknown } | null;
-      const read: ResponseLike = { ok: false, status: 409, json: async () => b, text: async () => JSON.stringify(b) };
-      if (b?.error === 'username_taken' && typeof b.suggest === 'string') throw new AccountError(t('auth.nameTaken', { name: b.suggest }), 409, 'username_taken', 0, 0, b.suggest);
+      const read: ResponseLike = { ok: false, status: res.status, json: async () => b, text: async () => JSON.stringify(b) };
+      const named = NAME_REFUSALS.get(typeof b?.error === 'string' ? b.error : '');
+      if (named !== undefined && typeof b?.suggest === 'string') throw new AccountError(t(named, { name: b.suggest }), res.status, b.error as string, 0, 0, b.suggest);
       return this.fail(read);
     }
     const s = await this.jsonOrFail<AccountSession>(res);
@@ -631,6 +642,36 @@ export class AccountClient {
   /** The phone (/tv): this account signs the TV showing `code` in (POST /api/auth/tv/confirm). */
   async tvConfirm(code: string): Promise<void> {
     await this.jsonOrFail<{ ok: true }>(await this.call('/api/auth/tv/confirm', { code }, await this.bearer()));
+  }
+
+  // ---- the dev-only sign-in (the sign-in design's §3.15; local work and forks) ---------------------
+
+  /**
+   * GET /api/config says the dev sign-in is open (`auth.devSignIn`: DEV_AUTH=1 on a loopback
+   * Worker). Asked once per page, and only by a caller that wants it (PERFIL on a page served from
+   * this machine), so a deployed page never spends a request on it. False when the config fails.
+   */
+  devSignInOffered(): Promise<boolean> {
+    if (this.devOffered === null) {
+      this.devOffered = (async () => {
+        try {
+          const res = await this.call('/api/config');
+          if (!res.ok) return false;
+          const c = (await res.json()) as { auth?: { devSignIn?: unknown } } | null;
+          return c?.auth?.devSignIn === true;
+        } catch {
+          return false;
+        }
+      })();
+    }
+    return this.devOffered;
+  }
+
+  /** POST /api/dev/signin { name }: the account of that dev name (made at its first use), adopted as a sign-in's. */
+  async devSignIn(name: string): Promise<AccountSession> {
+    const s = await this.jsonOrFail<AccountSession>(await this.call('/api/dev/signin', { name: name.trim() }));
+    if (!isSession(s)) throw new AccountError(t('error.server'), 200, 'protocol');
+    return this.adopt(sessionPart(s));
   }
 
   /**
@@ -806,6 +847,18 @@ export class AccountClient {
 
   deletePreset(id: string): Promise<ExperimentalAnswer> {
     return this.experimentalCall('/api/me/presets/delete', { id });
+  }
+
+  // ---- public replays (src/net/replays.ts) ------------------------------------------------------
+
+  /** Whether this account's name is hidden in the public replays (GET /api/me/replay-name; default false). */
+  async replayNameHidden(): Promise<boolean> {
+    return ((await this.ownCall('/api/me/replay-name')) as { hidden?: unknown } | null)?.hidden === true;
+  }
+
+  /** PERFIL's switch: hide the name ('Jugador N') in the public replays or show it again; resolves the server's state after it. */
+  async setReplayNameHidden(hidden: boolean): Promise<boolean> {
+    return ((await this.ownCall('/api/me/replay-name', { hidden })) as { hidden?: unknown } | null)?.hidden === true;
   }
 
   // ---- cars and the hosts' shop (src/game/garage.ts; the answers: src/net/cosmetics.ts) ----------

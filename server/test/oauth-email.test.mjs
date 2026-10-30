@@ -50,7 +50,7 @@ globalThis.fetch = async (url, init) => {
   throw new Error('BLOCKED network call in a test: ' + u);
 };
 
-const { AccountsDO, CREATE_PER_NET, CREATE_PER_SITE } = await import('../src/AccountsDO.ts');
+const { AccountsDO, NEW_ACCOUNTS, NEW_ACCOUNTS_SITE } = await import('../src/AccountsDO.ts');
 const A = await import('../src/accountRoutes.ts');
 const TV = await import('../src/tvCodes.ts');
 const AUTH = await import('../src/auth.ts');
@@ -142,7 +142,11 @@ async function req(env, method, path, { ip = '198.20.0.1', origin = ORIGIN, bear
   if (bearer) headers.authorization = 'Bearer ' + bearer;
   if (cookie) headers.cookie = cookie;
   if (body !== undefined) headers['content-type'] = 'application/json';
-  const res = await worker.fetch(new Request(ORIGIN + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }), env);
+  // What the Worker sends after it answers (waitUntil: the email routes' mail) has gone out when this returns.
+  const pending = [];
+  const ctx = { waitUntil: (p) => pending.push(p), passThroughOnException() {} };
+  const res = await worker.fetch(new Request(ORIGIN + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }), env, ctx);
+  await Promise.all(pending);
   const text = await res.text();
   let json = null;
   try {
@@ -281,7 +285,12 @@ test('pending: /pending reports a match through a claim and through a hint; crea
   assert.equal(taken.json.error, 'username_taken');
   assert.equal(ACC.usernameProblem(taken.json.suggest), null);
   assert.equal(obj.store.usernameTaken(taken.json.suggest), false);
-  assert.equal((await create(env, t.pend, 'Guest_1', ip(4))).json.error, 'bad_username', "the name rules hold (a guest's)");
+  // The name rules hold, the email sign-up's (section 5.2; the merge with sign-in PR 7): a guest's
+  // name is reserved (400 name_reserved, a free suggestion), one that is no username is bad_username.
+  const guest = await create(env, t.pend, 'Guest_1', ip(4));
+  assert.deepEqual([guest.status, guest.json.error], [400, 'name_reserved'], "the name rules hold (a guest's)");
+  assert.equal(ACC.usernameIssue(guest.json.suggest), null);
+  assert.deepEqual([(await create(env, t.pend, 'tg-verify.com', ip(4))).json.error], ['bad_username']);
 });
 
 // ---- linking -----------------------------------------------------------------------------------------
@@ -450,10 +459,13 @@ test('create: a solved Turnstile check is required before the AccountsDO hears o
     const r = await create(env, s.pend, 'Alumno' + i, school, { turnstileToken: 'good-token' });
     assert.equal(r.status, 200, `alumno ${i}: ${JSON.stringify(r.json)}`);
   }
-  // The cap: CREATE_PER_NET a day per network (an IPv4 address or an IPv6 /64), CREATE_PER_SITE per /48.
+  // The cap: NEW_ACCOUNTS a day per network (an IPv4 address or an IPv6 /64), NEW_ACCOUNTS_SITE per
+  // /48, the email sign-up's counters (one budget for both ways in: see "one budget" below).
+  assert.deepEqual([NEW_ACCOUNTS.v4.day, NEW_ACCOUNTS.v6.day, NEW_ACCOUNTS_SITE.day], [200, 200, 300]);
+  const seed = (o, key, n) => o.store.mailWindowsWrite(new Map([[key, { hour_at: Date.now(), hour_n: 0, day_at: Date.now(), day_n: n }]]));
   const net = '198.51.100.9';
-  const [nc] = await obj.createKeys(net);
-  obj.store.throttleWrite(new Map([[nc.key, { count: CREATE_PER_NET - 1, first: Date.now(), lockedUntil: 0 }]]));
+  const [na] = await obj.newAccountCaps(net);
+  seed(obj, na.key, NEW_ACCOUNTS.v4.day - 1);
   const last = await oauth(env, 'discord', discord('d-ultimo'), { ip: net });
   assert.equal((await create(env, last.pend, 'Ultimo', net, { turnstileToken: 'good-token' })).status, 200);
   const over = await oauth(env, 'discord', discord('d-demas'), { ip: net });
@@ -464,8 +476,8 @@ test('create: a solved Turnstile check is required before the AccountsDO hears o
   assert.equal((await create(env, over.pend, 'Demas', net, { turnstileToken: 'good-token' })).status, 429);
   assert.equal((await create(env, over.pend, 'Demas', '198.51.100.10', { turnstileToken: 'good-token' })).status, 200);
   // IPv6: rotating /64s inside one /48 stops at the /48's cap.
-  const [, ns] = await again.createKeys('2001:db8:5:1::1');
-  again.store.throttleWrite(new Map([[ns.key, { count: CREATE_PER_SITE - 1, first: Date.now(), lockedUntil: 0 }]]));
+  const [, ns] = await again.newAccountCaps('2001:db8:5:1::1');
+  seed(again, ns.key, NEW_ACCOUNTS_SITE.day - 1);
   const v6a = await oauth(env, 'discord', discord('d-v6a'), { ip: '2001:db8:5:1::1' });
   assert.equal((await create(env, v6a.pend, 'Seisa', '2001:db8:5:1::1', { turnstileToken: 'good-token' })).status, 200);
   const v6b = await oauth(env, 'discord', discord('d-v6b'), { ip: '2001:db8:5:2::1' });
@@ -733,4 +745,152 @@ test('the live check\'s TV: a remote cannot answer Turnstile\'s challenge, so tv
   const dev = makeEnv();
   await post(dev.env, '/api/auth/tv/start', { ip: '198.51.102.1', body: {} });
   assert.equal([...dev.obj.tv.codes.values()][0].checked, true);
+});
+
+// ---- where sign-in PR 7 (email accounts) meets this PR (the merge of main) ----------------------------
+//
+// The email sign-up claims an address with a mailed code; a provider gives an address the Worker
+// trusts so far. One email, one account across both: a claim by either way in is the match of the
+// other; linkPending works on the email sign-in and on a reset as on the legacy login; the confirm
+// step's names follow the email sign-up's rules; and new accounts per network are one budget.
+
+/** A live deploy's mail settings with a fake binding that only records (MAIL_LIVE in a test env: nothing can send). */
+function mailEnv(extra = {}) {
+  const outbox = [];
+  const made = makeEnv({ EMAIL: { send: async (m) => void outbox.push(m) }, MAIL_LIVE: '1', MAIL_FROM: 'Turbogol <no-reply@turbo-gol.com>', MAIL_LINK_ORIGIN: ORIGIN, ...extra });
+  return { ...made, outbox };
+}
+const codeIn = (m) => /^(\d{6})$/m.exec(m.text)?.[1] ?? null;
+const resetLinkIn = (m) => /\/account#reset=([A-Za-z0-9_-]+)/.exec(m.text)?.[1] ?? null;
+const KEY = await ACC.passwordKey(PW);
+
+/** A whole email sign-up through the Worker (start, the mailed code, finish): its finish's answer. */
+async function emailSignUp(env, outbox, email, username, ip) {
+  const s = await post(env, '/api/auth/signup/start', { ip, body: { email, lang: 'es' } });
+  assert.equal(s.status, 200, JSON.stringify(s.json));
+  const code = codeIn(outbox.at(-1));
+  assert.match(code ?? '', /^\d{6}$/, 'M1 carries the code');
+  return post(env, '/api/auth/signup/finish', { ip, body: { attempt: s.json.attempt, code, username, password: KEY, lang: 'es', tz: 'America/Argentina/Buenos_Aires' } });
+}
+const signin = (env, email, ip, extra = {}, cookie) => post(env, '/api/auth/signin', { ip, cookie, body: { email, password: KEY, ...extra } });
+
+test('merge: one email, one account: an address an email sign-up claimed is the match of a provider\'s (via email), the create is refused, and the email sign-in with linkPending links it; a later Discord sign-in opens that account', async () => {
+  const { env, obj, outbox } = mailEnv();
+  const ip = ips();
+  const made = await emailSignUp(env, outbox, 'ana.p@example.org', 'AnaPe', ip(0));
+  assert.equal(made.status, 200, JSON.stringify(made.json));
+  const ana = made.json.playerId;
+  assert.equal(row(obj, ana).email_canon, 'ana.p@example.org');
+  // The same mailbox through Discord (verified there, another case): the email account is the match.
+  const d = await oauth(env, 'discord', discord('d-anape', { email: 'Ana.P@Example.org', verified: true }), { ip: ip(1) });
+  assert.equal(d.done.location, '/#auth=confirm');
+  const info = await pendingOf(env, d.pend, ip(1));
+  assert.deepEqual(info.json.match, { name: 'AnaPe', methods: ['password'], via: 'email', email: 'ana.p@example.org' });
+  const refused = await create(env, d.pend, 'OtraAna', ip(1));
+  assert.deepEqual([refused.status, refused.json.error], [409, 'email_has_account'], 'never a second account');
+  // The match sheet's email form: POST /api/auth/signin with linkPending (section 2.3).
+  const s = await signin(env, 'ana.p@example.org', ip(1), { linkPending: true }, '__Host-tg_pend=' + d.pend);
+  assert.equal(s.status, 200, JSON.stringify(s.json));
+  assert.equal(s.json.playerId, ana);
+  assert.deepEqual(s.json.linked, ['discord']);
+  assert.match(cookieLine(s.raw, '__Host-tg_pend') ?? '', /Max-Age=0/, 'the pending cookie goes');
+  assert.ok(cookieOf(s.raw, '__Host-tg_rt'), 'signed in');
+  assert.equal(row(obj, ana).discord_id, 'd-anape');
+  assert.equal(users(obj).length, 1);
+  const back = await oauth(env, 'discord', discord('d-anape', { email: 'ana.p@example.org', verified: true }), { ip: ip(2) });
+  assert.equal(back.done.location, '/#auth=ok');
+  assert.equal((await post(env, '/api/auth/refresh', { ip: ip(2), cookie: '__Host-tg_rt=' + back.rt })).json.playerId, ana);
+  // Without linkPending the email sign-in answers as before; with it and no pending cookie, no_pending.
+  const plain = await signin(env, 'ana.p@example.org', ip(3));
+  assert.equal(plain.status, 200);
+  assert.equal(plain.json.linked, undefined);
+  assert.equal(plain.json.linkError, undefined);
+  const none = await signin(env, 'ana.p@example.org', ip(3), { linkPending: true });
+  assert.deepEqual([none.status, none.json.linkError], [200, 'no_pending']);
+});
+
+test('merge: the email sign-in with linkPending links only to the match (wrong_account, signed in all the same); with no match any account links it; a hint is cleared by the email sign-up that claims its address', async () => {
+  const { env, obj, outbox } = mailEnv();
+  const ip = ips();
+  const ana = (await emailSignUp(env, outbox, 'ana@example.org', 'AnaMail', ip(0))).json.playerId;
+  const beto = (await emailSignUp(env, outbox, 'beto@example.org', 'BetoMail', ip(1))).json.playerId;
+  const d = await oauth(env, 'discord', discord('d-de-ana', { email: 'ana@example.org', verified: true }), { ip: ip(2) });
+  const wrong = await signin(env, 'beto@example.org', ip(2), { linkPending: true }, '__Host-tg_pend=' + d.pend);
+  assert.deepEqual([wrong.status, wrong.json.playerId, wrong.json.linkError], [200, beto, 'wrong_account']);
+  assert.equal(row(obj, beto).discord_id, null);
+  assert.equal(row(obj, ana).discord_id, null);
+  // No address from the provider: no match, so the account that signs in takes it.
+  const n = await oauth(env, 'discord', discord('d-sin-correo'), { ip: ip(3) });
+  const ok = await signin(env, 'beto@example.org', ip(3), { linkPending: true }, '__Host-tg_pend=' + n.pend);
+  assert.deepEqual(ok.json.linked, ['discord']);
+  assert.equal(row(obj, beto).discord_id, 'd-sin-correo');
+  // A Discord account made by the confirm step carries its address as a hint; the email sign-up of
+  // that address gets M1 "hint", claims it and clears the hint: from then on it is that account's.
+  const h = await oauth(env, 'discord', discord('d-pista', { email: 'pista@example.org', verified: true }), { ip: ip(4) });
+  const hinted = (await create(env, h.pend, 'Pista', ip(4))).json.playerId;
+  assert.equal(row(obj, hinted).email_hint_canon, 'pista@example.org');
+  const claimer = await emailSignUp(env, outbox, 'pista@example.org', 'PistaMail', ip(5));
+  assert.equal(claimer.status, 200, JSON.stringify(claimer.json));
+  assert.equal(row(obj, hinted).email_hint_canon, null, 'the claim cleared the hint');
+  const g = await oauth(env, 'google', google('g-pista', { email: 'pista@example.org', email_verified: true }), { ip: ip(6) });
+  assert.deepEqual((await pendingOf(env, g.pend, ip(6))).json.match, { name: 'PistaMail', methods: ['password'], via: 'email', email: 'pista@example.org' });
+});
+
+test('merge: a reset with linkPending (the match sheet\'s "forgot your password?") links the pending identity to the account whose mailbox it proved', async () => {
+  const { env, obj, outbox } = mailEnv();
+  const ip = ips();
+  const ana = (await emailSignUp(env, outbox, 'olvido@example.org', 'Olvido', ip(0))).json.playerId;
+  const d = await oauth(env, 'discord', discord('d-olvido', { email: 'olvido@example.org', verified: true }), { ip: ip(1) });
+  assert.equal((await post(env, '/api/auth/forgot', { ip: ip(1), body: { email: 'olvido@example.org', lang: 'es' } })).status, 200);
+  const token = resetLinkIn(outbox.at(-1));
+  assert.ok(token, 'M3 carries a reset link');
+  const r = await post(env, '/api/auth/reset', { ip: ip(1), cookie: '__Host-tg_pend=' + d.pend, body: { token, password: await ACC.passwordKey('otra contraseña larga'), linkPending: true } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.deepEqual([r.json.playerId, r.json.linked], [ana, ['discord']]);
+  assert.match(cookieLine(r.raw, '__Host-tg_pend') ?? '', /Max-Age=0/);
+  assert.equal(row(obj, ana).discord_id, 'd-olvido');
+  assert.equal(r.json.mail, undefined, 'the mail order never reaches the client');
+});
+
+test('merge: the confirm step\'s names are the email sign-up\'s (section 5.2): a look-alike of a protected account is 409 name_lookalike with a free suggestion, a reserved word 400 name_reserved', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const owner = (await create(env, (await oauth(env, 'discord', discord('d-proyecto'), { ip: ip(0) })).pend, 'Proyecto', ip(0))).json.playerId;
+  assert.equal(obj.store.rebuildProtectedSkeletons([owner]), 1);
+  const d = await oauth(env, 'discord', discord('d-imita'), { ip: ip(1) });
+  const look = await create(env, d.pend, 'Pr0yect0', ip(1));
+  assert.deepEqual([look.status, look.json.error], [409, 'name_lookalike']);
+  assert.equal(ACC.usernameIssue(look.json.suggest), null);
+  assert.equal(obj.store.isLookalike(look.json.suggest, null) || obj.store.usernameTaken(look.json.suggest), false);
+  const reserved = await create(env, d.pend, 'Soporte_TG', ip(1), { lang: 'en' });
+  assert.deepEqual([reserved.status, reserved.json.error], [400, 'name_reserved']);
+  assert.match(reserved.json.suggest, /^Player\d{4}$/, 'the request\'s language');
+  assert.equal(users(obj).length, 1, 'nothing made, the pending identity kept');
+  assert.equal((await create(env, d.pend, look.json.suggest, ip(1))).status, 200);
+});
+
+test('merge: new accounts per network are one budget for the email sign-up and the OAuth confirm step (NEW_ACCOUNTS per IPv4 address or /64, NEW_ACCOUNTS_SITE per /48)', async () => {
+  const { env, obj, outbox } = mailEnv({ EMAIL_DAILY_CAP: '1000' });
+  const seed = async (ip, which, n) => {
+    const caps = await obj.newAccountCaps(ip);
+    obj.store.mailWindowsWrite(new Map([[caps[which].key, { hour_at: Date.now(), hour_n: 0, day_at: Date.now(), day_n: n }]]));
+  };
+  // An IPv4 address two short of its day: one email sign-up and one OAuth create, then neither.
+  const v4 = '198.51.100.77';
+  await seed(v4, 0, NEW_ACCOUNTS.v4.day - 2);
+  assert.equal((await emailSignUp(env, outbox, 'uno@example.org', 'PorCorreo', v4)).status, 200);
+  const a = await oauth(env, 'discord', discord('d-presupuesto-a'), { ip: v4 });
+  assert.equal((await create(env, a.pend, 'PorDiscord', v4)).status, 200, 'the 200th of the network');
+  const late = await emailSignUp(env, outbox, 'dos@example.org', 'TardeCorreo', v4);
+  assert.deepEqual([late.status, late.json.error], [429, 'rate_limited'], 'the OAuth create took the email sign-up\'s last slot');
+  assert.ok(late.json.retryAfterMs > 23 * 60 * 60_000);
+  const b = await oauth(env, 'discord', discord('d-presupuesto-b'), { ip: v4 });
+  assert.equal((await create(env, b.pend, 'TardeDiscord', v4)).status, 429);
+  // A refusal counts nothing, and another network is untouched.
+  assert.equal((await create(env, b.pend, 'TardeDiscord', '198.51.100.78')).status, 200);
+  // An IPv6 /48 one short of its day: an email sign-up from one /64 takes it, a create from another /64 is refused.
+  await seed('2001:db8:9:1::5', 1, NEW_ACCOUNTS_SITE.day - 1);
+  assert.equal((await emailSignUp(env, outbox, 'seis@example.org', 'SeisCorreo', '2001:db8:9:1::5')).status, 200);
+  const c = await oauth(env, 'discord', discord('d-presupuesto-c'), { ip: '2001:db8:9:2::1' });
+  assert.equal((await create(env, c.pend, 'SeisDiscord', '2001:db8:9:2::1')).status, 429);
 });

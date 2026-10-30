@@ -358,8 +358,11 @@ test('auth-1 / auth-11: every credential, linking, redeem, TV-approval, device a
   const tv = await tvSignIn(env, ana.bearer, ip);
   const other = await post(env, '/api/auth/tv/start', { ip: ip(20) });
   const calls = [
-    ['POST', '/api/auth/password', { password: KEY2, oldPassword: KEY }],
-    ['POST', '/api/auth/recovery-codes', { password: KEY }],
+    // Sign-in PR 7's credential routes (the old /api/auth/password and recovery codes answer 410 to everyone).
+    ['POST', '/api/me/password', { legacy: KEY, password: KEY2 }],
+    ['POST', '/api/me/password/link', {}],
+    ['POST', '/api/auth/reauth/code', {}],
+    ['POST', '/api/auth/reauth/code/verify', { attempt: 'A'.repeat(43), code: '123456' }],
     ['POST', '/api/me/username', { username: 'Robado', password: KEY, newPassword: KEY2 }],
     ['POST', '/api/me/shop/claim', { item: 'pampero' }],
     ['POST', '/nodes/shop/claim', { item: 'pampero' }],
@@ -633,20 +636,27 @@ test('authz-1: a password account re-authenticates with its password (POST /api/
 
 // ---- auth-3 / authz-2 / auth-persist-1: a first password and recovery codes need a fresh re-auth ----
 
-test('auth-3: an OAuth-only account\'s 1-hour Bearer alone sets no password and mints no recovery codes (403 reauth_required)', async () => {
-  const { env, obj } = makeEnv();
+/** A live deploy's mail with a fake `send_email` binding that only records (nothing can send in a test). */
+function mailEnv(sent) {
+  return { EMAIL: { send: async (m) => void sent.push(m) }, MAIL_LIVE: '1', MAIL_FROM: 'Turbogol <no-reply@turbo-gol.com>', MAIL_LINK_ORIGIN: ORIGIN };
+}
+
+test('auth-3: an OAuth-only account\'s 1-hour Bearer alone sets no password and mints no recovery codes (sign-in PR 7: those routes are 410 gone, and a first password needs the mailbox)', async () => {
+  const { env, obj } = makeEnv(mailEnv([]));
   const ip = ips();
   // A Discord-only account signed in 11 minutes ago, on two devices; its current Bearer is valid but not fresh.
   const a = await at(obj, -11 * MIN, () => oauth(env, 'discord', 'd-victim', { ip: ip(0) }));
   const b = await at(obj, -11 * MIN, () => oauth(env, 'discord', 'd-victim', { ip: ip(1) }));
   const s = await refresh(env, a.rt, ip(0));
   const id = s.json.playerId;
-  const pw = await post(env, '/api/auth/password', { ip: ip(2), bearer: s.json.session, body: { password: KEY2 } });
-  assert.equal(pw.status, 403);
-  assert.equal(pw.json.error, 'reauth_required');
-  const rc = await post(env, '/api/auth/recovery-codes', { ip: ip(2), bearer: s.json.session, body: {} });
-  assert.equal(rc.status, 403);
-  assert.equal(rc.json.error, 'reauth_required');
+  for (const path of ['/api/auth/password', '/api/auth/recovery-codes']) {
+    const r = await post(env, path, { ip: ip(2), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { password: KEY2 } });
+    assert.deepEqual([r.status, r.json.error], [410, 'gone'], path);
+  }
+  const mine = await post(env, '/api/me/password', { ip: ip(2), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { current: KEY, password: KEY2 } });
+  assert.deepEqual([mine.status, mine.json.error], [409, 'no_password'], 'a change needs a password to change');
+  const link = await post(env, '/api/me/password/link', { ip: ip(2), bearer: s.json.session, body: {} });
+  assert.deepEqual([link.status, link.json.error], [409, 'email_required'], 'no verified mailbox: nowhere to send the link');
   assert.equal(obj.store.credentials(userRow(obj, id).username).hash, undefined, 'still no password');
   assert.deepEqual(JSON.parse(userRow(obj, id).recovery), [], 'no codes');
   assert.equal((await refresh(env, b.rt, ip(1))).status, 200, 'the other device is still signed in');
@@ -655,28 +665,36 @@ test('auth-3: an OAuth-only account\'s 1-hour Bearer alone sets no password and 
   assert.equal(login.status, 401);
 });
 
-test('auth-persist-1: after "confirm it is you" the owner sets a first password and gets codes; the other devices stay signed in', async () => {
-  const { env, obj } = makeEnv();
+test('auth-persist-1: an OAuth account\'s first password comes only from its mailbox (a reset link), which signs every other device out; a change needs the current password and signs the others out', async () => {
+  const sent = [];
+  const { env, obj } = makeEnv(mailEnv(sent));
   const ip = ips();
   const other = await oauth(env, 'discord', 'd-ana', { ip: ip(1) });
   const a = await oauth(env, 'discord', 'd-ana', { ip: ip(0) }); // a fresh sign-in on this browser
   const s = await refresh(env, a.rt, ip(0));
   const id = s.json.playerId;
-  const pw = await post(env, '/api/auth/password', { ip: ip(0), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { password: KEY2 } });
-  assert.equal(pw.status, 200);
-  assert.ok(obj.store.credentials(userRow(obj, id).username).hash, 'a password now');
-  const o2 = await refresh(env, other.rt, ip(1));
-  assert.equal(o2.status, 200, 'a first password signs nobody out');
-  const s2 = await refresh(env, s.rt, ip(0));
-  const rc = await post(env, '/api/auth/recovery-codes', { ip: ip(0), bearer: s2.json.session, body: { password: KEY2 } });
-  assert.equal(rc.status, 200);
-  assert.equal(rc.json.recoveryCodes.length, 8);
-  // A password account changes its password with the old one, fresh or not (as before), and that signs the others out.
+  assert.equal(obj.store.claimEmail(id, 'ana@x.com', 'mail', Date.now()), 'ok');
+  const link = await post(env, '/api/me/password/link', { ip: ip(0), bearer: s.json.session, body: {} });
+  assert.deepEqual([link.status, link.json], [200, { sentTo: 'ana@x.com' }]);
+  assert.equal(obj.store.credentials(userRow(obj, id).username).hash, undefined, 'the Bearer itself set nothing');
+  const m = sent.at(-1);
+  assert.equal(m.to, 'ana@x.com');
+  const token = /#reset=([A-Za-z0-9_-]+)/.exec(m.text)[1];
+  const peek = await post(env, '/api/auth/reset/peek', { ip: ip(0), body: { token } });
+  assert.deepEqual([peek.status, peek.json.hasPassword, peek.json.email], [200, false, 'ana@x.com']);
+  const r = await post(env, '/api/auth/reset', { ip: ip(0), body: { token, password: KEY2 } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(userRow(obj, id).pw_v, 2, 'a first password, the current key');
+  assert.equal((await refresh(env, other.rt, ip(1))).status, 401, 'the reset signs every other device out');
+  // A change of the password: the current one proves it (no freshness), and the others go.
+  const third = await oauth(env, 'discord', 'd-ana', { ip: ip(2) });
+  const rt = cookieOf(r, '__Host-tg_rt');
   const stale = await AUTH.signJwt(SECRET, { typ: 's', sub: id, name: userRow(obj, id).username, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, acct: 1 });
-  assert.equal((await post(env, '/api/auth/password', { ip: ip(0), bearer: stale, body: { password: KEY } })).status, 400, 'no old password: refused');
-  const ch = await post(env, '/api/auth/password', { ip: ip(0), bearer: stale, cookie: '__Host-tg_rt=' + s2.rt, body: { oldPassword: KEY2, password: KEY } });
-  assert.equal(ch.status, 200);
-  assert.equal((await refresh(env, o2.rt, ip(1))).status, 401, 'a change signs the other devices out');
+  assert.equal((await post(env, '/api/me/password', { ip: ip(0), bearer: stale, cookie: '__Host-tg_rt=' + rt, body: { password: KEY } })).status, 400, 'no current password: refused');
+  const ch = await post(env, '/api/me/password', { ip: ip(0), bearer: stale, cookie: '__Host-tg_rt=' + rt, body: { current: KEY2, password: KEY } });
+  assert.equal(ch.status, 200, JSON.stringify(ch.json));
+  assert.equal((await refresh(env, third.rt, ip(2))).status, 401, 'a change signs the other devices out');
+  assert.equal((await refresh(env, rt, ip(0))).status, 200, 'not this one');
 });
 
 // ---- auth-11 / econ-2: the maintainer routes need a fresh primary sign-in, never a TV's ----------
@@ -849,7 +867,7 @@ test('auth-5 (review): a password checked behind a stolen session is throttled p
   for (let i = 0; i < 400; i++) {
     // 80 /64s in 2 /48s, 5 addresses each: no network cap is ever reached.
     const ip = `2001:db8:${i % 160 < 80 ? 'a' : 'b'}:${(Math.floor(i / 5) % 80).toString(16)}::${(i % 5) + 1}`;
-    const r = await post(env, '/api/auth/password', { ip, bearer: ana.bearer, cookie, body: { oldPassword: (i + 1).toString(16).padStart(64, '0'), password: 'e'.repeat(64) } });
+    const r = await post(env, '/api/me/password', { ip, bearer: ana.bearer, cookie, body: { legacy: (i + 1).toString(16).padStart(64, '0'), password: 'e'.repeat(64) } });
     const k = r.status + ':' + (r.json?.error ?? 'ok');
     tally[k] = (tally[k] ?? 0) + 1;
   }
@@ -859,13 +877,11 @@ test('auth-5 (review): a password checked behind a stolen session is throttled p
   assert.equal(Object.entries(tally).filter(([k]) => !k.startsWith('429:') && k !== '401:bad_credentials').length, 0, JSON.stringify(tally));
   assert.ok(tally['429:throttled'] >= 5, JSON.stringify(tally));
   // The right old password is refused too while the lock lasts, and nothing changed.
-  const right = await post(env, '/api/auth/password', { ip: '2001:db8:c:1::1', bearer: ana.bearer, cookie, body: { oldPassword: KEY, password: 'e'.repeat(64) } });
+  const right = await post(env, '/api/me/password', { ip: '2001:db8:c:1::1', bearer: ana.bearer, cookie, body: { legacy: KEY, password: 'e'.repeat(64) } });
   assert.equal(right.status, 429);
-  // The other checks behind a session share the account's counter.
-  const codes = await post(env, '/api/auth/recovery-codes', { ip: '2001:db8:c:2::1', bearer: ana.bearer, cookie, body: { password: KEY } });
-  assert.deepEqual([codes.status, codes.json.error], [429, 'throttled']);
+  // A rename checks no password since sign-in PR 7 (Bearer only): this legacy key asks "confirm it's you" first, which is throttled below.
   const ren = await post(env, '/api/me/username', { ip: '2001:db8:c:3::1', bearer: ana.bearer, cookie, body: { username: 'Robada2', password: KEY, newPassword: KEY2 } });
-  assert.deepEqual([ren.status, ren.json.error], [429, 'throttled']);
+  assert.deepEqual([ren.status, ren.json.error, ren.json.level], [403, 'reauth_required', 2]);
   // The lock stops only the checks behind a session: the owner signs in from home (with the anti-bot check every sign-in has).
   const own = await login(env, 'Robada', KEY, '198.18.230.9', { turnstileToken: 'good-token' });
   assert.equal(own.status, 200, 'the owner is never locked out of signing in: ' + JSON.stringify(own.json));

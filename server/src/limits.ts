@@ -76,6 +76,20 @@
  *   POST /api/auth/tv/info              tvInfo           account       30  RL_30    where a TV is before CONFIRMAR (sec/account-takeover):
  *                                                                                    one AccountsDO call; a wrong code counts as a failed
  *                                                                                    confirm there too
+ *   The email accounts (sign-in PR 7; the design's §2.16). Pre-filters only: the limits that bind are
+ *   the AccountsDO's, durable and exact (per address, network, account and the day's mail lanes):
+ *   POST /api/auth/signup/start         authMail         network      120  RL_120   a mail each (Turnstile too)
+ *   POST /api/auth/forgot, code/resend                                               the same rule
+ *   POST /api/auth/signup/check         authCode         network      120  RL_120   a code or a link checked: one AccountsDO call
+ *   POST /api/auth/reset/peek, reset
+ *   POST /api/auth/signup/finish        authCreate       network      120  RL_120   a new account (the rule of the OAuth confirm step's
+ *                                                                                    CREAR below; AccountsDO's durable cap of new accounts
+ *                                                                                    per network is one budget for both)
+ *   POST /api/auth/signin               login            network      120  RL_120   the email sign-in: two AccountsDO calls and a PBKDF2
+ *     every one above, and the five      signInSite       site         600  RL_600   sign-in routes, share one /48's 600
+ *   POST /api/me/password(/link)        authAcct         account       10  RL_10    a PBKDF2, or a mail, and an AccountsDO write
+ *   POST /api/auth/reauth/code(/verify) authAcct, and    account       10  RL_10    "confirm it's you" by a code from the
+ *                                       authMail/Code    network      120  RL_120   account's mailbox
  *   GET  /api/me                        me               account       60  RL_60    one AccountsDO call each
  *                                       meNet            network     1200  RL_1200
  *   GET  /api/ranked/result             rankedResult     account       60  RL_60    polled every 1-3 s for two minutes after a ranked match
@@ -88,9 +102,23 @@
  *   POST /api/auth/tv/renew             tvRenew          network       60  RL_60    a TV's next code, once per code's life (no check: its secret)
  *   GET  /nodes/admin/account-stats     accountStats     account       10  RL_10    a maintainer's account counts (nodeRoutes.ts): a few scans
  *                                                                                    of every account in the AccountsDO each
+ *   POST /api/dev/signin                dev              network      120  RL_120   the dev-only sign-in and the stub's outbox (accountRoutes.ts
+ *   GET  /api/dev/mail                                                               devRoute): counted only while their gate is open (DEV_AUTH=1
+ *                                                                                    on a loopback host); closed, they are an unknown route
  *   GET|HEAD /nodes/releases/*          nodeReleases     network     1200  RL_1200  installers and launchers; versioned files from the edge cache
  *   GET  /nodes/connect                 nodeConnect      network       30  RL_30    a node's control socket: one per node, reconnects back off
  *                                       nodeConnectWide  wide        1200  RL_1200  the same, per IPv6 /48 or IPv4 /24
+ *   PUT  /nodes/replays/<id>            nodeReplayPut    network       60  RL_60    a node's upload, one per match (the object checks the
+ *                                                                                    signature: anyone may send junk until then)
+ *   GET  /nodes/replays/<id>            nodeReplayGet    network       60  RL_60    a verifier's download, one per job
+ *     the two above, together           nodeReplayWide   wide        1200  RL_1200
+ *   GET  /nodes/replays                 replayList       network      120  RL_120   the public replay list (anyone): only a page that
+ *                                                                                    reaches the NodeRegistryDO counts (not the isolate's
+ *                                                                                    first page, not an edge-cached page)
+ *   GET  /nodes/replays/<id>/view       replayView       network      120  RL_120   a public replay: only an edge-cache miss counts (a
+ *                                                                                    class watching the same match asks the object once)
+ *     the two above, together           replaySite       site         600  RL_600   one /48's: rotating /64s gets no more object calls
+ *   GET|POST /api/me/replay-name        replayName       account       30  RL_30    PERFIL's "hide my name in public replays"
  *
  * Limits kept where they are (in-isolate only, per minute unless stated; the object ones hold
  * across isolates because there is one object):
@@ -104,10 +132,9 @@
  *                      reads, car and claim 30 writes per account; TV start 10, poll 60, confirm 30
  *                      per /64 (tvCodes.ts ipKey), plus tvCodes' own live-code and failed-confirm caps
  *   AccountsDO         the sign-in throttles, durable in its SQLite (auth_throttle): per (username,
- *                      network), per username, per network (IPv4 600, IPv6 /64 30 failures in 15
- *                      minutes) and per /48; see AccountsDO.ts
- *   nodeRoutes.ts      register 5 an hour per /64, replays 60 PUT and 60 GET, status 60, the public
- *                      replay list 60 and replay view 30 per /64, mine 30 and admin 30 per account,
+ *                      network), per username, per network (IPv4 address and IPv6 /64 alike: 600
+ *                      failures in 15 minutes) and per /48; see AccountsDO.ts THROTTLE_RULES
+ *   nodeRoutes.ts      register 5 an hour per /64, status 60, mine 30 and admin 30 per account,
  *                      tokens 10 a day per account
  *   NodeRegistryDO     register 5 an hour per /64, tokens 10 a day per account; control sockets
  *                      still to log in: 8 per address, 16 per prefix, 40 from unknown addresses and
@@ -174,6 +201,9 @@ export const LIMITS = {
   unlink: { by: 'account', isolate: 10, edge: 'RL_10' },
   sessions: { by: 'account', isolate: 30, edge: 'RL_30' },
   tvInfo: { by: 'account', isolate: 30, edge: 'RL_30' },
+  authMail: { by: 'network', isolate: 120, edge: 'RL_120' },
+  authCode: { by: 'network', isolate: 120, edge: 'RL_120' },
+  authAcct: { by: 'account', isolate: 10, edge: 'RL_10' },
   me: { by: 'account', isolate: 60, edge: 'RL_60' },
   meNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   rankedResult: { by: 'account', isolate: 60, edge: 'RL_60' },
@@ -181,10 +211,19 @@ export const LIMITS = {
   leaderboardYou: { by: 'account', isolate: 60, edge: 'RL_60' },
   leaderboardNet: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   accountStats: { by: 'account', isolate: 10, edge: 'RL_10' },
+  dev: { by: 'network', isolate: 120, edge: 'RL_120' },
   nodeReleases: { by: 'network', isolate: 1200, edge: 'RL_1200' },
   nodeConnect: { by: 'network', isolate: 30, edge: 'RL_30' },
   nodeConnectWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
-  // The OAuth confirm step and the TV's renewals (sign-in PR 6).
+  nodeReplayPut: { by: 'network', isolate: 60, edge: 'RL_60' },
+  nodeReplayGet: { by: 'network', isolate: 60, edge: 'RL_60' },
+  nodeReplayWide: { by: 'wide', isolate: 1200, edge: 'RL_1200' },
+  replayList: { by: 'network', isolate: 120, edge: 'RL_120' },
+  replayView: { by: 'network', isolate: 120, edge: 'RL_120' },
+  replaySite: { by: 'site', isolate: 600, edge: 'RL_600' },
+  replayName: { by: 'account', isolate: 30, edge: 'RL_30' },
+  // Every way an account is made (the email sign-up's finish, the OAuth confirm step) and the TV's
+  // renewals (sign-in PR 6; the design's section 2.16).
   authCreate: { by: 'network', isolate: 120, edge: 'RL_120' },
   tvRenew: { by: 'network', isolate: 60, edge: 'RL_60' },
 } as const satisfies Record<string, LimitRule>;
@@ -208,6 +247,27 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['register', 'signInSite'];
       case '/api/auth/recover':
         return ['recover', 'signInSite'];
+      // The email accounts (sign-in PR 7).
+      case '/api/auth/signup/start':
+      case '/api/auth/forgot':
+      case '/api/auth/code/resend':
+        return ['authMail', 'signInSite'];
+      case '/api/auth/signup/check':
+      case '/api/auth/reset/peek':
+      case '/api/auth/reset':
+        return ['authCode', 'signInSite'];
+      // A new account, by email or by the OAuth confirm step (pending/create, below): authCreate (section 2.16).
+      case '/api/auth/signup/finish':
+        return ['authCreate', 'signInSite'];
+      case '/api/auth/signin':
+        return ['login', 'signInSite'];
+      case '/api/me/password':
+      case '/api/me/password/link':
+        return ['authAcct'];
+      case '/api/auth/reauth/code':
+        return ['authAcct', 'authMail'];
+      case '/api/auth/reauth/code/verify':
+        return ['authAcct', 'authCode'];
       case '/api/auth/password':
         return ['password'];
       case '/api/auth/recovery-codes':
@@ -228,15 +288,21 @@ export function accountGate(method: string, path: string): readonly LimitName[] 
         return ['authCreate'];
       case '/api/auth/tv/renew':
         return ['tvRenew'];
+      case '/api/dev/signin':
+        return ['dev'];
+      case '/api/me/replay-name':
+        return ['replayName'];
     }
     return [];
   }
   if (method !== 'GET') return [];
   if (path === '/api/me') return ['me', 'meNet'];
+  if (path === '/api/me/replay-name') return ['replayName'];
   if (path === '/api/ranked/result') return ['rankedResult', 'rankedResultNet'];
   if (path === '/api/leaderboard') return ['leaderboardYou', 'leaderboardNet'];
   if (path === '/api/auth/sessions') return ['sessions'];
   if (path === '/nodes/admin/account-stats') return ['accountStats'];
+  if (path === '/api/dev/mail') return ['dev'];
   const o = /^\/api\/auth\/oauth\/(?:google|discord)\/(start|callback)$/.exec(path);
   if (o) return [o[1] === 'start' ? 'oauthStart' : 'oauthCallback', 'signInSite'];
   return [];

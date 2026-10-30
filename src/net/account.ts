@@ -58,7 +58,16 @@ export const USERNAME_MAX = 16;
 export const PASSWORD_MIN = 8;
 export const PASSWORD_MAX = 128;
 
-const RESERVED = new Set(['admin', 'administrator', 'moderator', 'mod', 'system', 'server', 'bot', 'guest', 'invitado', 'support', 'soporte', 'root', 'null', 'undefined', 'anonymous']);
+/**
+ * Names nobody may take (the sign-in design, section 5.2), compared by skeleton (nameSkeleton): the
+ * whole name, or one of its parts between '_', '.' and '-' ('Ana_Admin', 'R00t').
+ */
+const RESERVED_WORDS = [
+  'admin', 'administrator', 'moderator', 'mod', 'system', 'server', 'bot', 'guest', 'invitado', 'support', 'soporte', 'root', 'null', 'undefined', 'anonymous',
+  'turbogol', 'equipo', 'team', 'dev', 'developer', 'desarrollador', 'owner', 'mantenedor', 'maintainer', 'help', 'ayuda', 'anonimo',
+];
+/** Skeletons a name may not start with: it would read as a guest, a bot, the game or its staff ('Invitado4821', 'B0t', 'Soporte_TG'). */
+const RESERVED_PREFIXES = ['guest', 'invitado', 'bot', 'turbogol', 'admin', 'staff', 'soporte', 'support', 'moderador', 'moderator', 'sistema', 'system', 'oficial', 'official', 'server', 'servidor'];
 /** A few of the passwords every breach list starts with (NIST 800-63B: refuse known-bad secrets). */
 const WEAK_PASSWORDS = new Set([
   '12345678', '123456789', '1234567890', 'password', 'password1', 'qwertyui', 'qwerty123', '11111111', '00000000', 'iloveyou',
@@ -86,6 +95,7 @@ export type AccountIssueCode =
   | 'passwordLong'
   | 'passwordCommon'
   | 'passwordHasUsername'
+  | 'passwordHasEmail'
   | 'passwordRepeated';
 
 export interface AccountIssue {
@@ -103,30 +113,64 @@ export function looksLikeDomain(name: string): boolean {
   return /^www\./i.test(name) || /\.[a-z]{2,}$/i.test(name);
 }
 
+let reservedSkeletons: { words: Set<string>; prefixes: string[] } | null = null;
+
+/** RESERVED_WORDS and RESERVED_PREFIXES as skeletons ('turbogol' reads 'turbogoi'), made once. */
+function reserved(): { words: Set<string>; prefixes: string[] } {
+  reservedSkeletons ??= { words: new Set(RESERVED_WORDS.map(wordSkeleton)), prefixes: RESERVED_PREFIXES.map(wordSkeleton) };
+  return reservedSkeletons;
+}
+
+/**
+ * The name reads as a guest, a bot, the game or its staff (the sign-in design, section 5.2), by its
+ * skeleton (nameSkeleton): it starts with a reserved prefix ('Invitado4821', 'lnvitado', 'B0t'), it
+ * is a reserved word ('Adm1n', 'R00t', 'Turb0G0l') or one of its parts is ('Ana_Admin', 'Soporte_TG').
+ */
+export function isReservedName(name: string): boolean {
+  const r = reserved();
+  const skel = nameSkeleton(name);
+  if (r.words.has(skel) || r.prefixes.some((p) => skel.startsWith(p))) return true;
+  return usernameKey(name)
+    .split(/[_.-]+/)
+    .filter((part) => part.length > 0)
+    .some((part) => r.words.has(wordSkeleton(part)));
+}
+
 /**
  * Null when `name` is a valid username: 3-16 chars of ASCII letters, digits, '_', '-', '.', starting
- * with a letter or digit, not shaped like a web address (looksLikeDomain), not reserved, not
- * 'guest…', 'invitado…' (a guest's name is the server's 'Invitado 4821', src/net/guestName.ts) or
- * 'bot…'. Otherwise what is wrong with it. Checked on sign-up and rename only: a name taken before
- * a rule existed stays until its owner renames.
+ * with a letter or digit, not shaped like a web address (looksLikeDomain), not reserved by its
+ * skeleton (isReservedName: 'guest…', 'invitado…' (a guest's name is the server's 'Invitado 4821',
+ * src/net/guestName.ts), 'bot…', the game's and the staff's words, their look-alikes). Otherwise what
+ * is wrong with it. Checked on sign-up and rename only: a name taken before a rule existed stays
+ * until its owner renames.
  */
 export function usernameIssue(name: unknown): AccountIssue | null {
   if (typeof name !== 'string') return { code: 'usernameMissing' };
   if (name.length < USERNAME_MIN || name.length > USERNAME_MAX) return { code: 'usernameLength', params: { min: USERNAME_MIN, max: USERNAME_MAX } };
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name)) return { code: 'usernameChars' };
   if (looksLikeDomain(name)) return { code: 'usernameDomain' };
-  const k = usernameKey(name);
-  if (RESERVED.has(k) || k.startsWith('guest') || k.startsWith('invitado') || k.startsWith('bot')) return { code: 'usernameReserved' };
+  if (isReservedName(name)) return { code: 'usernameReserved' };
   return null;
 }
 
-/** Null when `pw` is acceptable for `username`; otherwise what is wrong with it. */
-export function passwordIssue(pw: unknown, username: string): AccountIssue | null {
+/** Whose password it is: its username, and its email once it has one (a string is the username alone, as before). */
+export type PasswordOwner = string | { username?: string; email?: string };
+
+/**
+ * Null when `pw` is acceptable for its owner; otherwise what is wrong with it: 8 to 128
+ * characters, not on the common list, not one repeated character, not holding the username, nor
+ * the email's local part (without its +tag) when that part has 4 characters or more.
+ */
+export function passwordIssue(pw: unknown, owner: PasswordOwner = ''): AccountIssue | null {
   if (typeof pw !== 'string' || pw.length < PASSWORD_MIN) return { code: 'passwordShort', params: { count: PASSWORD_MIN } };
   if (pw.length > PASSWORD_MAX) return { code: 'passwordLong', params: { count: PASSWORD_MAX } };
   const k = pw.toLowerCase();
   if (WEAK_PASSWORDS.has(k)) return { code: 'passwordCommon' };
+  const username = typeof owner === 'string' ? owner : (owner.username ?? '');
   if (username.length > 0 && k.includes(usernameKey(username))) return { code: 'passwordHasUsername' };
+  // The local part as typed (its +tag dropped) and as its canon reads it (a Gmail address without its dots).
+  const locals = typeof owner === 'string' ? [] : [normalizeEmail(owner.email), emailCanon(owner.email)].map((e) => (e === null ? '' : e.slice(0, e.indexOf('@')).split('+')[0]));
+  if (locals.some((local) => local.length >= 4 && k.includes(local))) return { code: 'passwordHasEmail' };
   if (/^(.)\1+$/.test(pw)) return { code: 'passwordRepeated' };
   return null;
 }
@@ -142,6 +186,7 @@ const ISSUE_SPANISH: Readonly<Record<AccountIssueCode, string>> = {
   passwordLong: `La contraseña puede tener hasta ${PASSWORD_MAX} caracteres`,
   passwordCommon: 'Esa contraseña es demasiado común',
   passwordHasUsername: 'La contraseña no puede contener tu usuario',
+  passwordHasEmail: 'La contraseña no puede contener tu correo',
   passwordRepeated: 'La contraseña no puede ser un solo carácter repetido',
 };
 
@@ -152,8 +197,8 @@ export function usernameProblem(name: unknown): string | null {
 }
 
 /** passwordIssue as a Spanish message, null when acceptable. */
-export function passwordProblem(pw: unknown, username: string): string | null {
-  const issue = passwordIssue(pw, username);
+export function passwordProblem(pw: unknown, owner: PasswordOwner): string | null {
+  const issue = passwordIssue(pw, owner);
   return issue === null ? null : ISSUE_SPANISH[issue.code];
 }
 
@@ -350,6 +395,47 @@ export interface DeviceSession {
 
 export interface SessionsAnswer {
   sessions: DeviceSession[];
+}
+
+// ---- the email accounts (sign-in PR 7: server/src/accountRoutes.ts "email accounts") ------------------
+//
+// Every code and link answer is the same for any address (I6). `attempt` binds a code to the browser
+// that started (keep it in sessionStorage, never localStorage: I5). A refused name's 409 carries a
+// free `suggest`. Errors are { error, message } with these codes: bad_email, code_wrong { triesLeft },
+// code_expired, link_invalid, already_created { email }, email_taken, name_reserved / username_taken /
+// name_lookalike { suggest }, email_rate_limited / rate_limited { retryAfterMs }, email_paused,
+// email_unconfigured, email_required, no_password, password_required, gone.
+
+/** POST /api/auth/signup/start; POST /api/auth/reauth/code adds `to` (the account's own address). */
+export interface CodeStartAnswer {
+  attempt: string;
+  /** When REENVIAR may be pressed (server ms). */
+  resendAt: number;
+  codeLength?: 6;
+  to?: string;
+}
+
+/** POST /api/auth/signup/check: the address the code or the link proves. */
+export interface SignupCheckAnswer {
+  email: string;
+}
+
+/** POST /api/auth/code/resend: the same code and link went again. */
+export interface CodeResendAnswer {
+  resendAt: number;
+  resendsLeft: number;
+}
+
+/** POST /api/auth/reset/peek: who a reset link is for ("create" when the account has no password). */
+export interface ResetPeekAnswer {
+  name: string;
+  email: string;
+  hasPassword: boolean;
+}
+
+/** POST /api/me/password/link: where the link went. */
+export interface PasswordLinkAnswer {
+  sentTo: string;
 }
 
 export interface RegisterAnswer extends AccountSession {

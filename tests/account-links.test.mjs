@@ -198,6 +198,19 @@ test('AccountClient: pending (404: none), CREAR with a solved check, the name, n
   assert.equal(acc.account.name, 'Nadia', 'adopted');
   assert.deepEqual(srv.calls.find((c) => c.path === '/api/auth/pending/create' && c.body.username === 'Nadia').body, { username: 'Nadia', news: true, lang: 'es', tz: 'America/Argentina/Cordoba', turnstileToken: 'tok' });
   await assert.rejects(acc.createAccount('Guest_1', { news: false, lang: 'es', tz: '' }), (x) => x.code === 'bad_username', 'refused before any request');
+  // The email sign-up's name rules (sign-in PR 7, met in the merge): a look-alike of a protected
+  // account (409) and a reserved word only the server knows (400) carry their free name too.
+  const rules = fakeServer({
+    '/api/auth/pending/create': (b) =>
+      b.username === 'Pr0yect0' ? res(409, { error: 'name_lookalike', message: 'Ese nombre se parece mucho a otro', suggest: 'Pr0yect4821' }) : res(400, { error: 'name_reserved', message: 'Ese nombre está reservado', suggest: 'Jugador4821' }),
+  });
+  const named = new AC.AccountClient({ fetchFn: rules.fetchFn, storage: null, antiBot: async () => 'tok' });
+  const look = await named.createAccount('Pr0yect0', { news: false, lang: 'es', tz: '' }).catch((x) => x);
+  assert.deepEqual([look.code, look.suggest, look.status], ['name_lookalike', 'Pr0yect4821', 409]);
+  assert.match(look.message, /Pr0yect4821/);
+  const kept = await named.createAccount('Nombre', { news: false, lang: 'es', tz: '' }).catch((x) => x);
+  assert.deepEqual([kept.code, kept.suggest, kept.status], ['name_reserved', 'Jugador4821', 400]);
+  assert.equal(named.account, null, 'nothing adopted');
   await acc.cancelPending();
   assert.equal(srv.calls.at(-1).path, '/api/auth/pending/cancel');
   const none = new AC.AccountClient({ fetchFn: fakeServer({ '/api/auth/pending': () => res(404, { error: 'no_pending' }) }).fetchFn, storage: null });

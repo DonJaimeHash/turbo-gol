@@ -228,17 +228,23 @@ test('legacy login: a wrong legacy key changes nothing; the rename and the passw
   assert.deepEqual([bad.status, bad.json.error], [401, 'bad_credentials']);
   const after = row(obj, ana.id);
   assert.deepEqual([after.pw_v, after.pw_hash, after.pw_salt, after.pw_kid], [before.pw_v, before.pw_hash, before.pw_salt, before.pw_kid], 'nothing stored');
-  // A rename proves the old name's legacy key and stores the current key: the new name signs in with it.
+  // A rename is Bearer only since sign-in PR 7: a legacy key (salted with the old name) is re-keyed
+  // first by "confirm it's you" with both keys, and then the new name signs in with the same password.
   const s = await login(env, { username: 'Ana', password: ana.v1 }, ip(1));
   assert.equal(row(obj, ana.id).pw_v, 1, 'one key: no re-key');
-  const ren = await post(env, '/api/me/username', { ip: ip(1), bearer: s.json.session, cookie: '__Host-tg_rt=' + cookieOf(s.raw, '__Host-tg_rt'), body: { username: 'Anabel', password: ana.v1, passwordV2: ana.v2 } });
-  assert.equal(ren.status, 200, JSON.stringify(ren.json));
+  const cookie1 = '__Host-tg_rt=' + cookieOf(s.raw, '__Host-tg_rt');
+  const first = await post(env, '/api/me/username', { ip: ip(1), bearer: s.json.session, cookie: cookie1, body: { username: 'Anabel', password: ana.v1, passwordV2: ana.v2 } });
+  assert.deepEqual([first.status, first.json.error, first.json.level], [403, 'reauth_required', 2], 'a body password is never read: the legacy key asks first');
+  const re = await post(env, '/api/auth/reauth', { ip: ip(1), bearer: s.json.session, cookie: cookie1, body: { legacy: ana.v1, password: ana.v2 } });
+  assert.equal(re.status, 200, JSON.stringify(re.json));
   assert.equal(row(obj, ana.id).pw_v, 2);
+  const ren = await post(env, '/api/me/username', { ip: ip(1), bearer: re.json.session, body: { username: 'Anabel' } });
+  assert.equal(ren.status, 200, JSON.stringify(ren.json));
   assert.equal((await login(env, { username: 'Anabel', password: WRONG, passwordV2: ana.v2 }, ip(2))).status, 200, 'the same password, under the new name');
-  // A password change proves the old one by its current key and stores the new one as current.
+  // A password change (POST /api/me/password) proves the old one by its current key and stores the new one as current.
   const next = await ACC.passwordKey('otra clave larga');
   const s2 = await login(env, { username: 'Anabel', password: WRONG, passwordV2: ana.v2 }, ip(3));
-  const ch = await post(env, '/api/auth/password', { ip: ip(3), bearer: s2.json.session, cookie: '__Host-tg_rt=' + cookieOf(s2.raw, '__Host-tg_rt'), body: { oldPassword: WRONG, oldPasswordV2: ana.v2, passwordV2: next } });
+  const ch = await post(env, '/api/me/password', { ip: ip(3), bearer: s2.json.session, cookie: '__Host-tg_rt=' + cookieOf(s2.raw, '__Host-tg_rt'), body: { legacy: WRONG, current: ana.v2, password: next } });
   assert.equal(ch.status, 200, JSON.stringify(ch.json));
   assert.equal(row(obj, ana.id).pw_v, 2);
   assert.equal((await login(env, { username: 'Anabel', password: WRONG, passwordV2: next }, ip(4))).status, 200);
@@ -249,8 +255,9 @@ test('legacy login: a wrong legacy key changes nothing; the rename and the passw
 test('pepper: with PASSWORD_PEPPER a record is written with pw_kid p1, and a copy of the database without the pepper checks nothing', async () => {
   const { env, obj } = makeEnv({ PASSWORD_PEPPER: PEPPER });
   const ip = ips();
-  const k = await keysOf('Pepa');
-  const r = await post(env, '/api/auth/register', { ip: ip(0), body: { username: 'Pepa', passwordV2: k.v2 } });
+  // Sign-in PR 7 retired the username sign-up (410): the record is written by the legacy sign-in's re-key.
+  const k = await legacyAccount(obj, 'Pepa');
+  const r = await login(env, { username: 'Pepa', password: k.v1, passwordV2: k.v2 }, ip(0));
   assert.equal(r.status, 200, JSON.stringify(r.json));
   const u = row(obj, r.json.playerId);
   assert.deepEqual([u.pw_v, u.pw_kid], [2, 'p1']);
@@ -435,7 +442,7 @@ test('throttles (review): each check counts as it starts, so a burst in flight a
   const s = await login(env, { username: 'Robada', password: ana.v1, passwordV2: ana.v2 }, '100.68.0.1');
   assert.equal(s.status, 200);
   const cookie = '__Host-tg_rt=' + cookieOf(s.raw, '__Host-tg_rt');
-  const pa = await Promise.all(Array.from({ length: 10 }, (_, i) => post(env, '/api/auth/password', { ip: `100.68.1.${i + 1}`, bearer: s.json.session, cookie, body: { oldPasswordV2: WRONG, passwordV2: H('5') } })));
+  const pa = await Promise.all(Array.from({ length: 10 }, (_, i) => post(env, '/api/me/password', { ip: `100.68.1.${i + 1}`, bearer: s.json.session, cookie, body: { current: WRONG, password: H('5') } })));
   assert.deepEqual(tallyOf(pa), { '401:bad_credentials': 5, '429:throttled': 5 });
   // Straight at the object: begins that charge, none finished yet, on one key.
   const headers = { [AUTH.INTERNAL_HEADER]: await AUTH.internalSecret(SECRET), 'content-type': 'application/json' };
@@ -466,11 +473,11 @@ test('request rules: login and recover need a solved Turnstile check every time,
   }
   assert.equal(calls.length, n0, 'nothing reached the AccountsDO');
   assert.equal((await login(env, { username: 'Ana', password: ana.v1, passwordV2: ana.v2, ...TOK }, ip(0))).status, 200);
-  // A recovery stores the current key, with a solved check.
-  const codes = await post(env, '/api/auth/recovery-codes', { ip: ip(1), bearer: (await login(env, { username: 'Ana', password: WRONG, passwordV2: ana.v2, ...TOK }, ip(1))).json.session, body: { passwordV2: ana.v2 } });
-  assert.equal(codes.status, 200, JSON.stringify(codes.json));
+  // A recovery stores the current key, with a solved check. (New codes are no longer minted, sign-in
+  // PR 7: the account's codes of before still work until the cutoff.)
+  obj.store.setRecovery(ana.id, [await A.recoveryCodeHash('CCCC-DDDD')]);
   const next = await ACC.passwordKey('una nueva clave');
-  const rec = await post(env, '/api/auth/recover', { ip: ip(2), body: { username: 'Ana', code: codes.json.recoveryCodes[0], passwordV2: next, ...TOK } });
+  const rec = await post(env, '/api/auth/recover', { ip: ip(2), body: { username: 'Ana', code: 'CCCC-DDDD', passwordV2: next, ...TOK } });
   assert.equal(rec.status, 200, JSON.stringify(rec.json));
   assert.equal(row(obj, ana.id).pw_v, 2);
   assert.equal(claims(rec.json.session).aal, 2, 'a recovery is level 2');
@@ -561,7 +568,7 @@ test('levels: a maintainer route refuses level 1 (403 reauth_required { level: 2
   assert.equal((await req(env, 'GET', '/nodes/admin/account-stats', { ip: ip(0), bearer: re.json.session })).status, 200);
 });
 
-test('levels: a family from before levels (auth_lvl 0) is level 0: never fresh, so a link, a first password and an unlink ask first', async () => {
+test('levels: a family from before levels (auth_lvl 0) is level 0: never fresh, so a link and an unlink ask first (a first password is gone from sessions)', async () => {
   const { env, obj } = makeEnv();
   const ip = ips();
   // A Discord-only account and a device that signed in a minute ago with the code of before (auth_at set, no level).
@@ -577,8 +584,9 @@ test('levels: a family from before levels (auth_lvl 0) is level 0: never fresh, 
   assert.equal(c.aal, undefined, 'at no level');
   const link = await req(env, 'GET', '/api/auth/oauth/discord/start?link=1', { ip: ip(1), cookie: '__Host-tg_rt=' + s.rt, origin: null });
   assert.equal(link.location, '/#auth=error:reauth_required');
+  // A first password no longer comes from a session at all (sign-in PR 7): only a link to the mailbox makes one.
   const pw = await post(env, '/api/auth/password', { ip: ip(1), bearer: s.json.session, body: { passwordV2: WRONG } });
-  assert.deepEqual([pw.status, pw.json.error, pw.json.level], [403, 'reauth_required', 1]);
+  assert.deepEqual([pw.status, pw.json.error], [410, 'gone']);
   const un = await post(env, '/api/auth/unlink', { ip: ip(1), bearer: s.json.session, body: { provider: 'google' } });
   assert.deepEqual([un.status, un.json.error, un.json.level], [403, 'reauth_required', 1]);
   assert.equal(row(obj, id).google_sub, 'g-vieja');
@@ -694,35 +702,29 @@ function asObjectOfBefore(env) {
   };
 }
 
-test('deploy window (review): with PASSWORD_PEPPER set, what the Worker stores through an AccountsDO of before carries no pepper, so every owner signs in once the object runs this code (a sign-up, a recovery, a password change, a rename); the other order too', async () => {
+test('deploy window (review): with PASSWORD_PEPPER set, what the Worker stores through an AccountsDO of before carries no pepper, so every owner signs in once the object runs this code (a recovery, a password change); the other order too', async () => {
+  // Sign-in PR 7 retired the username sign-up, and a rename stores no password any more: what still
+  // writes a record through such an object is a recovery and POST /api/me/password.
   const { env, obj, db } = makeEnv({ PASSWORD_PEPPER: PEPPER });
   const ip = ips();
   const rtOf = (r) => '__Host-tg_rt=' + cookieOf(r.raw, '__Host-tg_rt');
   const NEW = 'otra contraseña larga';
   const next = await ACC.passwordKey(NEW);
-  const ventana = await keysOf('Ventana');
   const recupera = await legacyAccount(obj, 'Recupera');
   obj.store.setRecovery(recupera.id, [await A.recoveryCodeHash('AAAA-BBBB')]);
   const cambio = await legacyAccount(obj, 'Cambio');
-  const renombre = await legacyAccount(obj, 'Renombre');
   // Signed in before the deploy, by an old page (the legacy key alone: nothing re-keyed).
   const sCambio = await login(env, { username: 'Cambio', password: cambio.v1 }, ip(0));
-  const sRen = await login(env, { username: 'Renombre', password: renombre.v1 }, ip(0));
   asObjectOfBefore(env);
-  const up = await post(env, '/api/auth/register', { ip: ip(1), body: { username: 'Ventana', passwordV2: ventana.v2 } });
-  assert.equal(up.status, 200, JSON.stringify(up.json));
   assert.equal((await post(env, '/api/auth/recover', { ip: ip(2), body: { username: 'Recupera', code: 'AAAA-BBBB', passwordV2: next } })).status, 200);
-  assert.equal((await post(env, '/api/auth/password', { ip: ip(3), bearer: sCambio.json.session, cookie: rtOf(sCambio), body: { oldPassword: cambio.v1, oldPasswordV2: cambio.v2, passwordV2: next } })).status, 200);
-  assert.equal((await post(env, '/api/me/username', { ip: ip(4), bearer: sRen.json.session, cookie: rtOf(sRen), body: { username: 'Renombrado', password: renombre.v1, passwordV2: renombre.v2 } })).status, 200);
-  const ids = { Ventana: up.json.playerId, Recupera: recupera.id, Cambio: cambio.id, Renombrado: renombre.id };
+  assert.equal((await post(env, '/api/me/password', { ip: ip(3), bearer: sCambio.json.session, cookie: rtOf(sCambio), body: { legacy: cambio.v1, current: cambio.v2, password: next } })).status, 200);
+  const ids = { Recupera: recupera.id, Cambio: cambio.id };
   for (const id of Object.values(ids)) assert.deepEqual([row(obj, id).pw_v, row(obj, id).pw_kid], [1, ''], 'labelled as the object of before labels');
   // The object restarts on this code: each owner signs in with the page's two keys, and the record moves to its right labels.
   const fresh = attach(env, db);
   const keysNow = {
-    Ventana: { password: ventana.v1, passwordV2: ventana.v2 },
     Recupera: { password: await ACC.legacyPasswordKey('Recupera', NEW), passwordV2: next },
     Cambio: { password: await ACC.legacyPasswordKey('Cambio', NEW), passwordV2: next },
-    Renombrado: { password: await ACC.legacyPasswordKey('Renombrado', PW), passwordV2: renombre.v2 },
   };
   for (const [name, keys] of Object.entries(keysNow)) {
     const s = await login(env, { username: name, ...keys }, ip(5));
@@ -730,29 +732,32 @@ test('deploy window (review): with PASSWORD_PEPPER set, what the Worker stores t
     assert.deepEqual([row(fresh.obj, ids[name]).pw_v, row(fresh.obj, ids[name]).pw_kid], [2, 'p1'], name + ': relabelled, with the pepper');
   }
   // From now on the Worker peppers what it stores at once; the write asks the object first, the sign-ins never.
-  const later = await keysOf('Despues');
-  const r2 = await post(env, '/api/auth/register', { ip: ip(6), body: { username: 'Despues', passwordV2: later.v2 } });
-  assert.deepEqual([row(fresh.obj, r2.json.playerId).pw_v, row(fresh.obj, r2.json.playerId).pw_kid], [2, 'p1']);
-  assert.deepEqual(fresh.calls.filter((p) => p === '/pw-labels' || p === '/register'), ['/pw-labels', '/register']);
+  const despues = await legacyAccount(fresh.obj, 'Despues');
+  fresh.obj.store.setRecovery(despues.id, [await A.recoveryCodeHash('EEEE-FFFF')]);
+  const r2 = await post(env, '/api/auth/recover', { ip: ip(6), body: { username: 'Despues', code: 'EEEE-FFFF', passwordV2: next } });
+  assert.equal(r2.status, 200, JSON.stringify(r2.json));
+  assert.deepEqual([row(fresh.obj, despues.id).pw_v, row(fresh.obj, despues.id).pw_kid], [2, 'p1']);
+  assert.deepEqual(fresh.calls.filter((p) => p === '/pw-labels' || p === '/recover'), ['/pw-labels', '/recover']);
   // A rollback's overlap: this Worker, the object back on the code of before. Its next write is unpeppered again (no yes kept).
-  const sDes = await login(env, { username: 'Despues', password: later.v1, passwordV2: later.v2 }, ip(6));
+  const NEW2 = 'una tercera clave larga';
+  const next2 = await ACC.passwordKey(NEW2);
   asObjectOfBefore(env);
-  assert.equal((await post(env, '/api/auth/password', { ip: ip(6), bearer: sDes.json.session, cookie: rtOf(sDes), body: { oldPassword: later.v1, oldPasswordV2: later.v2, passwordV2: next } })).status, 200);
-  assert.deepEqual([row(fresh.obj, r2.json.playerId).pw_v, row(fresh.obj, r2.json.playerId).pw_kid], [1, ''], 'stored as the object of before stores');
+  assert.equal((await post(env, '/api/me/password', { ip: ip(6), bearer: r2.json.session, cookie: rtOf(r2), body: { current: next, password: next2 } })).status, 200);
+  assert.deepEqual([row(fresh.obj, despues.id).pw_v, row(fresh.obj, despues.id).pw_kid], [1, ''], 'stored as the object of before stores');
   const forward = attach(env, db);
-  assert.equal((await login(env, { username: 'Despues', password: await ACC.legacyPasswordKey('Despues', NEW), passwordV2: next }, ip(6))).status, 200, 'rolled forward, it signs in');
-  assert.deepEqual([row(forward.obj, r2.json.playerId).pw_v, row(forward.obj, r2.json.playerId).pw_kid], [2, 'p1']);
+  assert.equal((await login(env, { username: 'Despues', password: await ACC.legacyPasswordKey('Despues', NEW2), passwordV2: next2 }, ip(6))).status, 200, 'rolled forward, it signs in');
+  assert.deepEqual([row(forward.obj, despues.id).pw_v, row(forward.obj, despues.id).pw_kid], [2, 'p1']);
   // The other order (the one the deploy notes give): the minutes of the deploy without the pepper, the
   // secret set later. A record of those minutes whose owner has not signed in since still signs in.
   const b = makeEnv();
+  const tardia = await legacyAccount(b.obj, 'Tardia');
+  b.obj.store.setRecovery(tardia.id, [await A.recoveryCodeHash('GGGG-HHHH')]);
   asObjectOfBefore(b.env);
-  const tardia = await keysOf('Tardia');
-  const t = await post(b.env, '/api/auth/register', { ip: ip(7), body: { username: 'Tardia', passwordV2: tardia.v2 } });
-  assert.equal(t.status, 200);
+  assert.equal((await post(b.env, '/api/auth/recover', { ip: ip(7), body: { username: 'Tardia', code: 'GGGG-HHHH', passwordV2: next } })).status, 200);
   const bFresh = attach(b.env, b.db);
   b.env.PASSWORD_PEPPER = PEPPER;
-  assert.equal((await login(b.env, { username: 'Tardia', password: tardia.v1, passwordV2: tardia.v2 }, ip(8))).status, 200);
-  assert.deepEqual([row(bFresh.obj, t.json.playerId).pw_v, row(bFresh.obj, t.json.playerId).pw_kid], [2, 'p1']);
+  assert.equal((await login(b.env, { username: 'Tardia', password: await ACC.legacyPasswordKey('Tardia', NEW), passwordV2: next }, ip(8))).status, 200);
+  assert.deepEqual([row(bFresh.obj, tardia.id).pw_v, row(bFresh.obj, tardia.id).pw_kid], [2, 'p1']);
 });
 
 test('rollback (review): a recovery a build of before makes on a peppered account (the legacy key, no pepper, pw_v 1, its pw_kid p1 left as it was) signs in after the roll forward, by an old page and by this one', async () => {

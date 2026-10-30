@@ -22,7 +22,9 @@ licencia SIL Open Font License) para los títulos.
   - partidas en servidor con predicción;
   - varias playlists a la vez y elección de región;
   - salas personalizadas con lista pública, código y contraseña.
-- **Cuentas y competitivo**: usuario y contraseña (Google / Discord opcionales). Competitivo da un
+- **Cuentas y competitivo**: un correo confirmado con un código y una contraseña (Google / Discord
+  opcionales); un correo, una cuenta. Las cuentas que se crearon con usuario lo conservan hasta la
+  fecha de corte que anuncie el proyecto. Competitivo da un
   rating por playlist, con partidas de clasificación, rangos, ranking y penalización por abandono.
   Los invitados pueden jugar todo menos competitivo.
 - **Funciones experimentales** (jugadores con cuenta, Configuración > Experimental): la calidad
