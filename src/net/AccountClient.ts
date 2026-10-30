@@ -62,14 +62,23 @@ export interface AccountErrorDetail {
   suggest?: string;
   /** already_created: the address whose account exists (the sign-in tab opens with it). */
   email?: string;
+  /** deletion_pending (sign-in PR 12): when the account is purged (ms); the sign-in sent again with cancelDeletion calls it off. */
+  purgeAt?: number;
+}
+
+/** A password sign-in's options (signIn, legacySignIn). */
+export interface SignInOptions {
+  /** The player answered "cancel the deletion?" (deletion_pending): the sign-in calls the account's pending deletion off (sign-in PR 12). */
+  cancelDeletion?: boolean;
 }
 
 /** A refusal's detail from its body (each field only when it has its shape). */
-function detailOf(b: { triesLeft?: unknown; suggest?: unknown; email?: unknown }): AccountErrorDetail {
+function detailOf(b: { triesLeft?: unknown; suggest?: unknown; email?: unknown; purgeAt?: unknown }): AccountErrorDetail {
   const d: AccountErrorDetail = {};
   if (typeof b.triesLeft === 'number' && Number.isInteger(b.triesLeft) && b.triesLeft >= 0) d.triesLeft = b.triesLeft;
   if (typeof b.suggest === 'string' && usernameIssue(b.suggest) === null) d.suggest = b.suggest;
   if (typeof b.email === 'string' && normalizeEmail(b.email) !== null) d.email = b.email;
+  if (typeof b.purgeAt === 'number' && Number.isFinite(b.purgeAt) && b.purgeAt > 0) d.purgeAt = b.purgeAt;
   return d;
 }
 
@@ -431,7 +440,7 @@ export class AccountClient {
     let level: 0 | 1 | 2 = 0;
     let detail: AccountErrorDetail = {};
     try {
-      const b = (await res.json()) as { error?: unknown; message?: unknown; retryAfterMs?: unknown; level?: unknown; triesLeft?: unknown; suggest?: unknown; email?: unknown };
+      const b = (await res.json()) as { error?: unknown; message?: unknown; retryAfterMs?: unknown; level?: unknown; triesLeft?: unknown; suggest?: unknown; email?: unknown; purgeAt?: unknown };
       if (typeof b.error === 'string') code = b.error;
       if (typeof b.message === 'string' && b.message !== b.error) serverMessage = b.message;
       if (typeof b.retryAfterMs === 'number') retry = b.retryAfterMs;
@@ -561,12 +570,14 @@ export class AccountClient {
    * The username sign-in of before (POST /api/auth/login, until the cutoff of sign-in PR 9): both
    * keys of the typed password (a stored legacy password is checked with the legacy key and re-keyed
    * by the server to the current one), and a solved anti-bot check. PERFIL sends a typed value
-   * without '@' here (emailAuth.ts signInRoute); bad_credentials says "username" here.
+   * without '@' here (emailAuth.ts signInRoute); bad_credentials says "username" here. An account
+   * whose deletion is pending rejects with deletion_pending (detail.purgeAt); `cancelDeletion`, once
+   * the player said so, calls it off and signs in (sign-in PR 12; no screen asks it yet).
    */
-  async legacySignIn(username: string, password: string): Promise<AccountSession> {
+  async legacySignIn(username: string, password: string, opts: SignInOptions = {}): Promise<AccountSession> {
     if (username.trim().length === 0 || password.length === 0) throw new AccountError(t('auth.empty'), 400, 'empty');
     const keys = await bothKeys(username.trim(), password);
-    const res = await this.callAnonymous('/api/auth/login', { username: username.trim(), password: keys.legacy, passwordV2: keys.current });
+    const res = await this.callAnonymous('/api/auth/login', { username: username.trim(), password: keys.legacy, passwordV2: keys.current, ...(opts.cancelDeletion === true ? { cancelDeletion: true } : {}) });
     const s = await this.jsonOrFail<AccountSession>(res).catch((e: unknown) => Promise.reject(withText(e, 'bad_credentials', t('auth.badLegacyCredentials'))));
     return this.adopt(sessionPart(s));
   }
@@ -775,8 +786,9 @@ export class AccountClient {
    * straight on to linking that provider) or 'pend' (the confirm sheet's "I already have one": the
    * identity pending in this browser goes on the account it signs in to).
    */
-  oauthUrl(provider: OAuthProvider, link: boolean | 'link' | 'reauth' | 'pend' = false, then?: OAuthProvider): string {
-    const q = link === 'reauth' ? '?reauth=1' + (then !== undefined ? '&then=link:' + then : '') : link === 'pend' ? '?pend=1' : link ? '?link=1' : '';
+  oauthUrl(provider: OAuthProvider, link: boolean | 'link' | 'reauth' | 'pend' | 'cancelDel' = false, then?: OAuthProvider): string {
+    // 'cancelDel' (sign-in PR 12): the sign-in after /#auth=error:deletion_pending and "cancel the deletion?".
+    const q = link === 'reauth' ? '?reauth=1' + (then !== undefined ? '&then=link:' + then : '') : link === 'pend' ? '?pend=1' : link === 'cancelDel' ? '?cancelDel=1' : link ? '?link=1' : '';
     return `${this.apiBase}/api/auth/oauth/${provider}/start${q}`;
   }
 
@@ -1163,18 +1175,20 @@ export class AccountClient {
   /**
    * ENTRAR with an address (POST /api/auth/signin { email, password }): the current key only (a
    * password of before signs in by its username, and re-keys there). One bad_credentials for an
-   * unknown address and a wrong password alike (I6). Level 2; this device remembers it.
+   * unknown address and a wrong password alike (I6). Level 2; this device remembers it. A pending
+   * deletion rejects with deletion_pending (detail.purgeAt), and `cancelDeletion` calls it off, as
+   * legacySignIn.
    */
-  async signIn(email: string, password: string): Promise<AccountSession> {
-    return this.adopt(sessionPart(await this.emailSignIn(email, password, false)));
+  async signIn(email: string, password: string, opts: SignInOptions = {}): Promise<AccountSession> {
+    return this.adopt(sessionPart(await this.emailSignIn(email, password, false, opts.cancelDeletion === true)));
   }
 
   /** signIn's request, and signInAndLink's with `linkPending`: the session as answered (not adopted yet). */
-  private async emailSignIn(email: string, password: string, linkPending: boolean): Promise<AccountSession & { linked?: unknown; linkError?: unknown }> {
+  private async emailSignIn(email: string, password: string, linkPending: boolean, cancelDeletion = false): Promise<AccountSession & { linked?: unknown; linkError?: unknown }> {
     const address = normalizeEmail(email);
     if (address === null) throw new AccountError(t('error.account.bad_email'), 400, 'bad_email');
     if (password.length === 0) throw new AccountError(t('auth.emptyPassword'), 400, 'empty');
-    const body = { email: address, password: await passwordKey(password), ...(linkPending ? { linkPending: true } : {}) };
+    const body = { email: address, password: await passwordKey(password), ...(linkPending ? { linkPending: true } : {}), ...(cancelDeletion ? { cancelDeletion: true } : {}) };
     const s = await this.jsonOrFail<AccountSession & { linked?: unknown; linkError?: unknown }>(await this.callAnonymous('/api/auth/signin', body));
     if (!isSession(s)) throw new AccountError(t('error.server'), 200, 'protocol');
     // An email sign-in, even after a provider's round trip led here ("I have one"): "continue as" says email.
@@ -1310,6 +1324,27 @@ export class AccountClient {
     return this.adopt(sessionPart(s));
   }
 
+  // ---- account deletion (sign-in PR 12: the design's §2.10; the API only, the screens come with the terms) ----
+
+  /**
+   * POST /api/me/delete { confirm, lang }: the account is deleted after DELETE_GRACE (14 days); the
+   * purge date (ms). `confirm` is the username as the player typed it. Every device is signed out,
+   * this one too, so it forgets its session. Refusals: reauth_required (its `level`: confirm it is
+   * you first; 1 for an account whose most is a provider's press), bad_confirm, maintainer_account,
+   * deletion_pending, tv_session, and email_paused / email_rate_limited when M9 cannot go.
+   */
+  async deleteAccount(confirm: string): Promise<number> {
+    const r = (await this.ownCall('/api/me/delete', { confirm, lang: language() })) as { purgeAt?: unknown } | null;
+    if (typeof r?.purgeAt !== 'number') throw new AccountError(t('error.server'), 200, 'protocol');
+    this.signedOutHere();
+    return r.purgeAt;
+  }
+
+  /** M9's link (/account#keep=<token>): POST /api/auth/delete/cancel { token } calls the deletion off; link_invalid when it cannot any more. */
+  async cancelDeletion(token: string): Promise<void> {
+    await this.settleLink({ token }, true, async () => this.jsonOrFail<{ ok: true }>(await this.call('/api/auth/delete/cancel', { token })));
+  }
+
   /**
    * Settings › Game's Idioma, while signed in (§2.9, §4.2): the choice is kept for this tab
    * (sessionStorage) before the page reloads in the new language, and sendLanguageChoice sends it
@@ -1408,7 +1443,8 @@ export class AccountClient {
       if (spends) drop();
       return r;
     } catch (e) {
-      if (e instanceof AccountError && DEAD_LINK_CODES.has(e.code)) drop();
+      // deletion_pending from a reset or an undo: the link set the password and is spent (sign-in PR 12).
+      if (e instanceof AccountError && (DEAD_LINK_CODES.has(e.code) || (spends && e.code === 'deletion_pending'))) drop();
       throw e;
     }
   }

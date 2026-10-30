@@ -1117,6 +1117,10 @@ export default {
   'error.account.email_locked': 'Your email was just restored. You can change it again in a few days.',
   'error.account.move_refused': "That email is another account's only way in. Check the email we sent you.",
   'error.account.bad_prefs': 'Invalid language or time zone',
+  // Account deletion (sign-in PR 12): a sign-in while a deletion is pending (after the right password), the username typed wrong to confirm one, the project's account
+  'error.account.deletion_pending': 'This account is scheduled for deletion.',
+  'error.account.bad_confirm': 'Type your username exactly to confirm.',
+  'error.account.maintainer_account': "The project account can't be deleted.",
   // Custom lobbies: create, join, the lobby socket (server/src/index.ts, LobbyDO.ts, LobbyDirectoryDO.ts)
   // Generic: the server says what was attempted too often
   'error.lobby.rate_limited': 'Too many attempts, wait a minute',
