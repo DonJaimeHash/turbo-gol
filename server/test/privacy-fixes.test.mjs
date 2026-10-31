@@ -168,9 +168,10 @@ async function req(env, method, path, { ip = '198.18.0.1', origin = ORIGIN, bear
 const post = (env, path, o = {}) => req(env, 'POST', path, { body: {}, ...o });
 const signin = (env, email, ip, extra = {}) => post(env, '/api/auth/signin', { ip, body: { email, password: KEY, ...TOK, ...extra } });
 
-/** A provider's round trip: start (with `query`, `cookie`), then the callback with the state it set. */
-async function oauth(env, provider, who, { query = '', cookie, ip = '198.18.201.1', code = 'x' } = {}) {
-  identity[provider] = provider === 'google' ? { sub: who } : { id: who };
+/** A provider's round trip: start (with `query`, `cookie`), then the callback with the state it set; `email`: the address the provider says it verified. */
+async function oauth(env, provider, who, { query = '', cookie, ip = '198.18.201.1', code = 'x', email } = {}) {
+  const mail = email === undefined ? {} : provider === 'google' ? { email, email_verified: true } : { email, verified: true };
+  identity[provider] = provider === 'google' ? { sub: who, ...mail } : { id: who, ...mail };
   const start = await req(env, 'GET', `/api/auth/oauth/${provider}/start${query}`, { ip, cookie, origin: null });
   if (start.status !== 302 || !start.location.startsWith('https://')) return { start, done: null };
   const state = cookieOf(start.raw, '__Host-tg_oa');
@@ -199,6 +200,54 @@ async function account(obj, name, { email, google, discord, pw = true } = {}) {
   if (email) assert.equal(obj.store.claimEmail(id, email, 'mail', Date.now()), 'ok');
   return id;
 }
+
+// ---- data inventory I8: an unlink takes that provider's email hint with it ------------------------
+
+const hintOf = (obj, id) => {
+  const u = row(obj, id);
+  return { hint: u.email_hint, canon: u.email_hint_canon, from: u.email_hint_from };
+};
+const NO_HINT = { hint: null, canon: null, from: '' };
+
+test("an unlink takes the email hint that provider gave (DESVINCULAR DISCORD: Discord's address is no longer kept); a hint another provider gave stays", async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  // Google only, no password and no address: Discord linked with its address, which becomes the hint.
+  const id = await account(obj, 'Ana', { pw: false, google: 'g-ana' });
+  const g = await oauth(env, 'google', 'g-ana', { ip: ip(0) });
+  assert.equal(g.done.location, '/#auth=ok');
+  const l = await oauth(env, 'discord', 'd-ana', { ip: ip(0), query: '?link=1', cookie: '__Host-tg_rt=' + g.rt, email: 'Ana@Discord-Mail.com' });
+  assert.equal(l.done.location, '/#auth=linked');
+  assert.deepEqual(hintOf(obj, id), { hint: 'ana@discord-mail.com', canon: 'ana@discord-mail.com', from: 'discord' });
+  const s = await refresh(env, l.rt, ip(0));
+  assert.equal(s.status, 200);
+  assert.equal((await req(env, 'GET', '/api/me', { ip: ip(0), bearer: s.json.session })).json.emailHint, 'ana@discord-mail.com');
+  // DESVINCULAR DISCORD (level 1 is this account's ceiling): Discord and its address go.
+  const u = await post(env, '/api/auth/unlink', { ip: ip(0), bearer: s.json.session, body: { provider: 'discord' } });
+  assert.equal(u.status, 200, JSON.stringify(u.json));
+  assert.equal(row(obj, id).discord_id, null);
+  assert.deepEqual(hintOf(obj, id), NO_HINT, "Discord's address is not kept after the unlink");
+  assert.equal((await req(env, 'GET', '/api/me', { ip: ip(0), bearer: s.json.session })).json.emailHint, null);
+  // Nobody finds the account by that address any more (the confirm step's match).
+  assert.equal(obj.store.emailMatch({ email: 'ana@discord-mail.com', trust: 'asserted' }, Date.now()), null);
+  // A hint Google gave stays when Discord goes.
+  obj.store.sql.exec("UPDATE users SET discord_id = 'd-ana', discord_linked_at = ?, email_hint = 'ana@gmail.com', email_hint_canon = 'ana@gmail.com', email_hint_from = 'google' WHERE id = ?", Date.now(), id);
+  assert.equal((await post(env, '/api/auth/unlink', { ip: ip(0), bearer: s.json.session, body: { provider: 'discord' } })).status, 200);
+  assert.deepEqual(hintOf(obj, id), { hint: 'ana@gmail.com', canon: 'ana@gmail.com', from: 'google' }, "Google's hint is Google's");
+});
+
+test("an unlink never takes the account's verified address: the provider's hint goes, the email stays", async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const id = await account(obj, 'Bea', { email: 'bea@example.com', google: 'g-bea', discord: 'd-bea' });
+  assert.equal(obj.store.setEmailHint(id, 'bea@discord-mail.com', 'discord'), 'ok');
+  const s = await signin(env, 'bea@example.com', ip(0));
+  assert.equal(s.status, 200, JSON.stringify(s.json));
+  assert.equal((await post(env, '/api/auth/unlink', { ip: ip(0), bearer: s.json.session, body: { provider: 'discord' } })).status, 200);
+  assert.deepEqual(hintOf(obj, id), NO_HINT);
+  const me = (await req(env, 'GET', '/api/me', { ip: ip(0), bearer: s.json.session })).json;
+  assert.deepEqual([me.email, me.emailVerified, me.emailHint, me.providers], ['bea@example.com', true, null, ['password', 'google']]);
+});
 
 // ---- data inventory I7: the purge keeps a proof of each consent and withdrawal --------------------
 

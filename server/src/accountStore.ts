@@ -53,8 +53,9 @@
  * the verified address (email, email_canon: UNIQUE where set, only from a proof of the mailbox or an
  * authoritative provider; email_verified_at, email_proof), a provider's unproved address
  * (email_hint, email_hint_canon, email_hint_from: never mailed, cleared when any account claims that
- * canon), email_locked_until, the password's format (pw_v 0 none, 1 the legacy key salted with the
- * username, 2 the current key; pw_kid, the server pepper), lang and tz for mail, dev_sub, the
+ * canon or the account unlinks that provider), email_locked_until, the password's format (pw_v 0
+ * none, 1 the legacy key salted with the username, 2 the current key; pw_kid, the server pepper),
+ * lang and tz for mail, dev_sub, the
  * deletion (delete_requested_at, delete_purge_at) and unsub_id; to refresh: auth_lvl and method.
  * New tables (only hashes or HMACs of secrets and of throttle keys; an address only while its token
  * lives, or its undo):
@@ -1480,7 +1481,9 @@ export class AccountStore {
    * by the account's ceiling (ceilingOf), so no account is locked out of it: 'level2' when the
    * session is below what it needs. Leaving two or more needs level 1, which the route checks.
    * A maintainer account (§2.8, §3.12) keeps its password and at least two ways in: an unlink that
-   * would leave less is 'maintainer_two_ways', before any level is asked.
+   * would leave less is 'maintainer_two_ways', before any level is asked. The hint that provider
+   * gave (email_hint_from) goes with it (data inventory I8); the account's verified address is its
+   * own and stays, whoever proved it (a hint never holds it: claimIn clears that).
    */
   unlink(userId: string, provider: OAuthProvider, level: 0 | 1 | 2 = 2, legacyClosed = false): 'ok' | 'last_method' | 'maintainer_two_ways' | 'not_linked' | 'no_user' | 'level2' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
@@ -1496,6 +1499,7 @@ export class AccountStore {
       if (this.maintainerIds.has(userId) && (!hasPassword || ways - 1 < 2)) return 'maintainer_two_ways' as const;
       if (ways - 1 === 1 && level < Math.min(2, this.ceilingOf(u))) return 'level2' as const;
       this.sql.exec(`UPDATE users SET ${col} = NULL, ${provider}_linked_at = NULL WHERE id = ?`, userId);
+      this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE id = ? AND email_hint_from = ?", userId, provider);
       return 'ok' as const;
     });
   }
