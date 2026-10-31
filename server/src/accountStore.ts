@@ -53,8 +53,9 @@
  * the verified address (email, email_canon: UNIQUE where set, only from a proof of the mailbox or an
  * authoritative provider; email_verified_at, email_proof), a provider's unproved address
  * (email_hint, email_hint_canon, email_hint_from: never mailed, cleared when any account claims that
- * canon), email_locked_until, the password's format (pw_v 0 none, 1 the legacy key salted with the
- * username, 2 the current key; pw_kid, the server pepper), lang and tz for mail, dev_sub, the
+ * canon or the account unlinks that provider), email_locked_until, the password's format (pw_v 0
+ * none, 1 the legacy key salted with the username, 2 the current key; pw_kid, the server pepper),
+ * lang and tz for mail, dev_sub, the
  * deletion (delete_requested_at, delete_purge_at) and unsub_id; to refresh: auth_lvl and method.
  * New tables (only hashes or HMACs of secrets and of throttle keys; an address only while its token
  * lives, or its undo):
@@ -86,6 +87,9 @@
  * binds a marked key (a sign-up, a claim, an add or a move of the email, a link, the confirm step's
  * create) gets what is left of the sanction (applyMarksIn), and is not told.
  *   deleted_nodes    purged ids whose nodes the NodeRegistryDO has not banned yet (the alarm asks again)
+ *   consent_proofs   what the purge keeps of the consent log: each row's kind, version, granted or
+ *                    withdrawn and time, by the tombstoned id (no source, address or name), for
+ *                    CONSENT_PROOF_KEEP_MS from the purge, so a past consent or withdrawal can be shown
  *
  * The news consent (sign-in PR 13, the design's §2.11 and §3.14; no news is sent yet): the consent
  * log only grows and its newest news row is the state. The switch at sign-up and at the confirm
@@ -248,6 +252,13 @@ export const CANCEL_AGAIN_MS = 10 * 60_000;
 const MARK_ABANDONS_MAX = 50;
 /** consents.source of the news withdrawal a deletion request writes. */
 export const DELETION_CONSENT_SOURCE: ConsentSource = 'deletion';
+/**
+ * How long a purged account's consent proofs stay (consent_proofs, from the purge): 2 years, the
+ * privacy draft's `[2 años]` for keeping the proof of a request and its answer (Política §6,
+ * ABOGADO D39; D13 asks whether a proof of consent must outlive the account and names no period).
+ * A placeholder until the lawyer answers.
+ */
+export const CONSENT_PROOF_KEEP_MS = 2 * 365 * DAY_MS;
 
 /** A sanction mark's kind (sanction_marks.key, §1.3): 'e' an email canon (its own, its hint's, a held one), 'g' a Google sub, 'd' a Discord id. */
 export type MarkKind = 'e' | 'g' | 'd';
@@ -654,7 +665,7 @@ export interface EmailMatch {
 }
 
 /** linkPending's outcome: linked, or why not (the sign-in itself stands either way). */
-export type LinkPendingResult = 'linked' | 'wrong_account' | 'provider_set' | 'already_linked' | 'no_user';
+export type LinkPendingResult = 'linked' | 'wrong_account' | 'provider_set' | 'already_linked' | 'no_user' | 'reauth_required';
 
 const NO_EMAIL: ProviderEmail = { email: null, trust: 'none' };
 
@@ -843,9 +854,10 @@ export class AccountStore {
    * 'not_due'), never the project's account ('maintainer': its deletion is called off), and `keys`
    * holding the key of every value it has now ('retry' otherwise: a value changed since they were
    * made). Then, with a sanction in force, a sanction_marks row per key (a mark already there keeps
-   * the later end of each); then every row of the account (PURGE_TABLES, users, its mail tokens);
-   * then its tombstone. Idempotent: a purged account is 'gone', and nothing of another one is read
-   * or written but the marks it shares a key with.
+   * the later end of each); then its consent log's proof (consent_proofs: kind, version, granted,
+   * time); then every row of the account (PURGE_TABLES, users, its mail tokens); then its
+   * tombstone. Idempotent: a purged account is 'gone', and nothing of another one is read or
+   * written but the marks it shares a key with.
    */
   purgeAccount(userId: string, keys: MarkKeys, now: number): { result: PurgeResult; marks: number } {
     return this.tx(() => {
@@ -876,6 +888,11 @@ export class AccountStore {
           marks++;
         }
       }
+      // The proof of what it consented to and withdrew outlives it: no source, address or name, only the tombstoned id.
+      this.sql.exec(
+        'INSERT INTO consent_proofs (deleted_id, kind, version, granted, at, until) SELECT user_id, kind, version, granted, at, ? FROM consents WHERE user_id = ? ORDER BY id',
+        now + CONSENT_PROOF_KEEP_MS, userId,
+      );
       for (const table of PURGE_TABLES) this.sql.exec(`DELETE FROM ${table} WHERE user_id = ?`, userId);
       // Its mailed proofs: its own rows, and the sign-up rows it was made from (used_by).
       this.sql.exec('DELETE FROM mail_tokens WHERE user_id = ? OR used_by = ?', userId, userId);
@@ -889,6 +906,14 @@ export class AccountStore {
   /** `id` is a purged account's (deleted_ids). */
   isDeleted(id: string): boolean {
     return this.sql.exec('SELECT 1 AS x FROM deleted_ids WHERE id = ?', id).toArray().length > 0;
+  }
+
+  /** What a purged account consented to and withdrew (consent_proofs), the oldest first: the proof that outlives it. */
+  consentProofs(deletedId: string): Array<{ kind: string; version: string; granted: boolean; at: number }> {
+    return this.sql
+      .exec('SELECT kind, version, granted, at FROM consent_proofs WHERE deleted_id = ? ORDER BY at, rowid', deletedId)
+      .toArray()
+      .map((r) => ({ kind: str(r.kind), version: str(r.version), granted: num(r.granted) === 1, at: num(r.at) }));
   }
 
   /** Purged ids whose nodes the NodeRegistryDO has not answered for yet (/operator-deleted: deleted_nodes), the oldest first. */
@@ -998,6 +1023,10 @@ export class AccountStore {
     s.exec('CREATE TABLE IF NOT EXISTS legacy_reminders (user_id TEXT PRIMARY KEY, cutoff INTEGER NOT NULL, at INTEGER NOT NULL)');
     // Sign-in PR 12: purged ids the NodeRegistryDO has not answered for yet (their nodes to ban; the alarm tries again). Additive.
     s.exec('CREATE TABLE IF NOT EXISTS deleted_nodes (id TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+    // The purge's proof of a consent or a withdrawal (data inventory I7): the tombstoned id, no personal data, until `until`. Additive.
+    s.exec('CREATE TABLE IF NOT EXISTS consent_proofs (deleted_id TEXT NOT NULL, kind TEXT NOT NULL, version TEXT NOT NULL, granted INTEGER NOT NULL, at INTEGER NOT NULL, until INTEGER NOT NULL)');
+    s.exec('CREATE INDEX IF NOT EXISTS consent_proofs_id ON consent_proofs(deleted_id)');
+    s.exec('CREATE INDEX IF NOT EXISTS consent_proofs_until ON consent_proofs(until)');
     // Sign-in PR 13: every news grant has its unsubscribe id, the sign-ups of before too. Additive.
     this.mintMissingUnsubIds();
   }
@@ -1452,7 +1481,9 @@ export class AccountStore {
    * by the account's ceiling (ceilingOf), so no account is locked out of it: 'level2' when the
    * session is below what it needs. Leaving two or more needs level 1, which the route checks.
    * A maintainer account (§2.8, §3.12) keeps its password and at least two ways in: an unlink that
-   * would leave less is 'maintainer_two_ways', before any level is asked.
+   * would leave less is 'maintainer_two_ways', before any level is asked. The hint that provider
+   * gave (email_hint_from) goes with it (data inventory I8); the account's verified address is its
+   * own and stays, whoever proved it (a hint never holds it: claimIn clears that).
    */
   unlink(userId: string, provider: OAuthProvider, level: 0 | 1 | 2 = 2, legacyClosed = false): 'ok' | 'last_method' | 'maintainer_two_ways' | 'not_linked' | 'no_user' | 'level2' {
     const col = provider === 'google' ? 'google_sub' : 'discord_id';
@@ -1468,6 +1499,7 @@ export class AccountStore {
       if (this.maintainerIds.has(userId) && (!hasPassword || ways - 1 < 2)) return 'maintainer_two_ways' as const;
       if (ways - 1 === 1 && level < Math.min(2, this.ceilingOf(u))) return 'level2' as const;
       this.sql.exec(`UPDATE users SET ${col} = NULL, ${provider}_linked_at = NULL WHERE id = ?`, userId);
+      this.sql.exec("UPDATE users SET email_hint = NULL, email_hint_canon = NULL, email_hint_from = '' WHERE id = ? AND email_hint_from = ?", userId, provider);
       return 'ok' as const;
     });
   }
@@ -1671,12 +1703,15 @@ export class AccountStore {
    * for each provider is free ('provider_set') and no account owns either identity
    * ('already_linked'). All or nothing; then the address fills the email in (step 6). `marks`: the
    * identities' and their addresses' mark keys (§3.13 step 4). A pending deletion links nothing.
+   * `lvl`: the level of the sign-in it rides on (2 a password or a reset, a provider's press 1); a
+   * maintainer account (§3.12) takes it at level 2 only ('reauth_required'), as linkLevel asks.
    */
-  linkPending(userId: string, pend: PendingIdentity, now: number, marks?: MarkKeys): LinkPendingResult {
+  linkPending(userId: string, pend: PendingIdentity, now: number, marks?: MarkKeys, lvl: 0 | 1 | 2 = 0): LinkPendingResult {
     const idents = pendingIdents(pend);
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1 || this.pendingDeletion(u)) return 'no_user' as const;
+      if (lvl < 2 && this.maintainerIds.has(userId)) return 'reauth_required' as const;
       const match = this.pendingMatch(pend, now);
       if (match !== null && match.userId !== userId) return 'wrong_account' as const;
       for (const i of idents) {
@@ -2722,13 +2757,14 @@ export class AccountStore {
    * An add, a change or a move, proved by the new mailbox (a code typed in the browser that asked, or
    * the mailed link), in one transaction (§2.6): the canon checked again (claimed by another account
    * it is a race, 'taken', unless the row asked to move it from that very account and it still keeps
-   * a way in without it; 'move_refused' otherwise; held for another account's undo, 'taken'); then the
-   * address, its proof 'mail', this account's hint and every other account's hint of that canon gone,
-   * the account's other add / change / reset / reauth rows dead and the row used. A change also holds
-   * the old canon for EMAIL_UNDO_MS (email_holds), stores the undo row for the old address
-   * (`undo`: its nonce and hash, M6's link) and signs out every other refresh family of the account
-   * (`keep`: the caller's token, kept). A move first empties the other account's address and kills
-   * its mailed rows; it keeps its sessions and its providers. `marks`: the canon's mark key (§3.13 step 4).
+   * a way in without it and is no maintainer account; 'move_refused' otherwise; held for another
+   * account's undo, 'taken'); then the address, its proof 'mail', this account's hint and every
+   * other account's hint of that canon gone, the account's other add / change / reset / reauth rows
+   * dead and the row used. A change also holds the old canon for EMAIL_UNDO_MS (email_holds), stores
+   * the undo row for the old address (`undo`: its nonce and hash, M6's link) and signs out every
+   * other refresh family of the account (`keep`: the caller's token, kept). A move first empties the
+   * other account's address and kills its mailed rows; it keeps its sessions and its providers.
+   * `marks`: the canon's mark key (§3.13 step 4).
    */
   applyEmail(rowHash: string, keep: string | null, undo: { nonce: string; hash: string }, now: number, marks?: MarkKeys): EmailApplied | 'expired' | 'taken' | 'move_refused' | 'no_user' {
     return this.tx(() => {
@@ -2743,7 +2779,8 @@ export class AccountStore {
       if (st.kind === 'claimed' && st.userId === id) return 'expired' as const;
       if (st.kind === 'claimed') {
         if (moveFrom !== st.userId) return 'taken' as const;
-        if (this.moveSource(st.userId) === null) return 'move_refused' as const;
+        // A maintainer account's address never moves (§3.12): a row made before it was trusted included.
+        if (this.moveSource(st.userId) === null || this.maintainerIds.has(st.userId)) return 'move_refused' as const;
         from = st.userId;
       }
       if (st.kind === 'held' && st.userId !== id) return 'taken' as const;
@@ -2931,8 +2968,9 @@ export class AccountStore {
    * Daily cleanup: expired refresh tokens, locks and bans, old abandons and ranked results (never
    * the hosts' shop); and the sign-in tables: mail tokens a day past their expiry, undo holds past
    * their end, throttle rows outside their window and unlocked, mail caps whose windows are over,
-   * the mail days older than 30 days and sanction marks past their end. Never the consents (the
-   * log), the tombstones (deleted_ids) or meta.
+   * the mail days older than 30 days, sanction marks past their end and a purged account's consent
+   * proofs past CONSENT_PROOF_KEEP_MS. Never the consents (the log), the tombstones (deleted_ids) or
+   * meta.
    */
   prune(now: number): void {
     this.tx(() => {
@@ -2950,6 +2988,7 @@ export class AccountStore {
       // mail_day.day is a UTC date (mailCaps.ts mailDay): the rows of days before the kept ones go.
       this.sql.exec('DELETE FROM mail_day WHERE day < ?', new Date(now - MAIL_DAY_KEEP_DAYS * DAY_MS).toISOString().slice(0, 10));
       this.sql.exec('DELETE FROM sanction_marks WHERE until <= ?', now);
+      this.sql.exec('DELETE FROM consent_proofs WHERE until <= ?', now);
     });
   }
 }

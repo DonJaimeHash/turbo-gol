@@ -152,6 +152,24 @@ export function unlinkKeepsMaintainer(me: MeInfo): boolean {
 }
 
 /**
+ * The level VINCULAR asks for (the server's linkLevel): 1, or 2 for the project account, which only
+ * its password reaches, so "confirm it's you" offers the password and not a provider's page that
+ * the server would refuse after the round trip.
+ */
+export function linkLevel(me: MeInfo | null): 1 | 2 {
+  return me?.maintainer !== undefined ? 2 : 1;
+}
+
+/**
+ * The level AGREGAR and CONFIRMAR CORREO ask for (the server's emailLevel): 1, or 2 for the project
+ * account while it has a password (an address added at level 1 would reach 2 by its reset link).
+ * Without one it stays 1, the only level it can reach, so the owner can still add its first address.
+ */
+export function emailAddLevel(me: MeInfo | null): 1 | 2 {
+  return me?.maintainer?.password === true ? 2 : 1;
+}
+
+/**
  * PRIVACIDAD's "News by email" switch shows (§3.14 step 2): an account with a verified address (news
  * only ever goes to one, and the server refuses a grant without it), no deletion pending, and not a
  * TV signed in with the phone (POST /api/me/consent takes a full session; a TV's /api/me has no address).
@@ -772,7 +790,7 @@ export function profileScreen(menu: Menu): Screen {
       usernameUntil,
       ...linked.map(linkedRow),
       // A link needs a credential proved on this browser in the last minutes: confirm it is you first.
-      ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true))), { 'data-key': 'profile-link-' + p })),
+      ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true)), linkLevel(me)), { 'data-key': 'profile-link-' + p })),
       secondary(t('profile.devices'), () => devicesDialog(), { 'data-key': 'profile-devices' }),
       secondary(
         t('profile.signOut'),
@@ -897,8 +915,8 @@ export function profileScreen(menu: Menu): Screen {
   /** The configured providers the account has not linked (VINCULAR on the banner and the grace sheet). */
   const unlinked = (me: MeInfo): OAuthProvider[] => emailProviders(menu).filter((p) => !me.providers.includes(p));
 
-  /** VINCULAR {provider}: once this browser is fresh(1) (a link adds a way in), the provider's page. */
-  const linkProvider = (p: OAuthProvider): void => fresh(() => (window.location.href = acc.oauthUrl(p, true)), 1);
+  /** VINCULAR {provider}: once this browser is fresh(1) (a link adds a way in; fresh(2) for the project account), the provider's page. */
+  const linkProvider = (p: OAuthProvider): void => fresh(() => (window.location.href = acc.oauthUrl(p, true)), linkLevel(acc.me));
 
   /**
    * The Correo row (§3.9): "{email}" with CAMBIAR CORREO, "Sin correo" with AGREGAR CORREO, or
@@ -920,9 +938,10 @@ export function profileScreen(menu: Menu): Screen {
 
   /**
    * AGREGAR, CAMBIAR or CONFIRMAR (§3.6 steps 2 to 4): "confirm it's you" first when this browser is
-   * not fresh enough (1 to add or confirm, 2 to change; a password of before is re-keyed by itself
-   * first, level 2), then the address and its code. `direct`: the banner's ENVIAR CÓDIGO for a hint,
-   * the code straight away. A provider's round trip comes back to it (the marker keepResume).
+   * not fresh enough (1 to add or confirm, 2 for the project account with a password: emailAddLevel;
+   * 2 to change; a password of before is re-keyed by itself first, level 2), then the address and
+   * its code. `direct`: the banner's ENVIAR CÓDIGO for a hint, the code straight away. A provider's
+   * round trip comes back to it (the marker keepResume).
    */
   const emailDialog = (mode: 'add' | 'change' | 'confirm', direct = false): void => {
     const me = acc.me;
@@ -938,7 +957,7 @@ export function profileScreen(menu: Menu): Screen {
       }
       emailSheet(menu, change ? t('auth.emailChangeTitle') : mode === 'confirm' ? t('auth.emailConfirmTitle') : t('auth.emailAddTitle'), mode === 'confirm' ? hint : '', hooks);
     };
-    fresh(open, change || legacy ? 2 : 1, legacy, 'email:' + mode);
+    fresh(open, change || legacy ? 2 : emailAddLevel(me), legacy, 'email:' + mode);
   };
 
   /** Right after a username's sign-in (§3.10 step 3): "Agrega tu correo", its date while there is one. */

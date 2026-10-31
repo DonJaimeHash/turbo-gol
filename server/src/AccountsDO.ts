@@ -129,9 +129,10 @@
  *   POST /code-resend     { attempt, ip, userId? }                   -> { resendAt, resendsLeft, mail } | 410 | 429 | 503
  *   POST /mail-failed     { kind, lane }                             -> { paused, alert } (the signup lane's automatic pause)
  *   Adding and changing the email, and the cutoff (sign-in PR 9, the design's §2.6, §2.9, §3.10):
- *   POST /me-email        { userId, email, attempt, lang?, ip }      -> { resendAt, to, mail } | 400 bad_email / same_email
+ *   POST /me-email        { userId, email, attempt, lang?, ip }      -> { resendAt, to, mail, alert? } | 400 bad_email / same_email
  *                                                                     | 409 email_locked { until } | 429 | 503 (one row for any
- *                                                                     address: M5, M7 "move" with its code, or a decoy, I6)
+ *                                                                     address: M5, M7 "move" with its code, or a decoy, I6;
+ *                                                                     alert: a maintainer's address asked for, never moved)
  *   POST /me-email-verify { userId, attempt, code, keep?, providers?, lang? } -> MeInfo & { mail } | 400 code_wrong | 410
  *                                                                     | 409 email_taken / move_refused
  *   POST /email-confirm   { token, keep?, providers?, lang? }        -> { ok, name, email, mail } | 410 link_invalid | 409
@@ -1222,10 +1223,12 @@ export class AccountsDO extends DurableObject<Env> {
    * canon: a real row and M5 with the code to the typed address; claimed by another account that keeps
    * a way in without it (a linked provider): a real row with `moveFrom`, and M7 "move" with the code
    * to that account's own address; claimed by an account with no other way in: a decoy, M7 "only";
-   * held for another account's undo: a decoy, M7 "held"; a suspended owner: a decoy and no mail. The
-   * requester's answer is the same in every case (I6). `code` and `token`: the row's own (its nonce).
+   * held for another account's undo: a decoy, M7 "held"; a suspended owner: a decoy and no mail; a
+   * maintainer account's (NODE_TRUSTED_OPERATORS, §3.12: its address never moves): a decoy, no mail,
+   * and `alert` names it for the Worker's maintainer ALERT. The requester's answer is the same in
+   * every case (I6). `code` and `token`: the row's own (its nonce).
    */
-  private emailPlan(userId: string, canon: string, typed: string, requestLang: string | null, now: number, code: string, token: string): { real: boolean; moveFrom: string | null; mail: MailOrder | null } {
+  private emailPlan(userId: string, canon: string, typed: string, requestLang: string | null, now: number, code: string, token: string): { real: boolean; moveFrom: string | null; mail: MailOrder | null; alert?: { userId: string; username: string } } {
     const me = this.store.mailProfile(userId);
     if (me === null) return { real: false, moveFrom: null, mail: null };
     const st = this.store.canonState(canon, now);
@@ -1239,6 +1242,7 @@ export class AccountsDO extends DurableObject<Env> {
     const lang = mailLang(other.lang, requestLang);
     if (st.kind === 'held') return { real: false, moveFrom: null, mail: { to: st.email, lang, data: { kind: 'email_in_use', name: other.name, other: me.name, variant: 'held' } } };
     if (other.email === null) return { real: false, moveFrom: null, mail: null };
+    if (this.store.isMaintainer(other.userId)) return { real: false, moveFrom: null, mail: null, alert: { userId: other.userId, username: other.name } };
     const source = this.store.moveSource(other.userId);
     if (source === null) return { real: false, moveFrom: null, mail: { to: other.email, lang, data: { kind: 'email_in_use', name: other.name, other: me.name, variant: 'only' } } };
     return { real: true, moveFrom: other.userId, mail: { to: other.email, lang, ...(other.tz ? { tz: other.tz } : {}), data: { kind: 'email_in_use', name: other.name, other: me.name, variant: 'move', code, methods: source.ways } } };
@@ -1285,7 +1289,7 @@ export class AccountsDO extends DurableObject<Env> {
       now,
     );
     this.store.mailDayCount(mailDay(now), 'account', 'sent');
-    return json({ resendAt: now + RESEND.gapMs, to: email, mail: plan.mail });
+    return json({ resendAt: now + RESEND.gapMs, to: email, mail: plan.mail, ...(plan.alert !== undefined ? { alert: plan.alert } : {}) });
   }
 
   /** The undo row's secrets (M6's link), made before a handler's one step (a change needs them). */
@@ -1531,7 +1535,7 @@ export class AccountsDO extends DurableObject<Env> {
     if (typeof r.deletionPending === 'number') return deletionPending(r.deletionPending, { mail });
     // linkPending (section 2.4): the reset proved this account's mailbox; the identity pending in
     // this browser goes on it under §3.8's rules (only the account its address leads to, if any).
-    return json({ ...r, mail, ...(pend !== null ? linkAnswer(this.store.linkPending(r.userId, pend, now, marks), pend) : {}) });
+    return json({ ...r, mail, ...(pend !== null ? linkAnswer(this.store.linkPending(r.userId, pend, now, marks, r.authLvl ?? 0), pend) : {}) });
   }
 
   /**
@@ -1904,7 +1908,7 @@ export class AccountsDO extends DurableObject<Env> {
         // The right password, and a deletion pending: said only now (I6), nothing signed in or linked.
         if (r === 'deletion_pending') return deletionPending(s.deletionAt(b.userId));
         // linkPending: the identity pending in this browser goes on this account, in the same step (§3.8).
-        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks), pend) } : r);
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks, r.authLvl ?? 0), pend) } : r);
       }
       case '/refresh': {
         const next = grantOf(b.next);
@@ -1979,7 +1983,7 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'deletion_pending') return error(409, 'deletion_pending', 'Esta cuenta tiene un borrado pendiente');
         if (linkTo !== null && replace !== null) s.revokeDevice(linkTo, replace);
         // "I already have one" (pend=1): the identity pending in this browser goes on the account it signed in to.
-        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks), pend) } : r);
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks, r.authLvl ?? 0), pend) } : r);
       }
       case '/pending-match': {
         const pend = pendingOf(b.pending);
