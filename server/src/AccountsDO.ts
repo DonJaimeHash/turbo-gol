@@ -1531,7 +1531,7 @@ export class AccountsDO extends DurableObject<Env> {
     if (typeof r.deletionPending === 'number') return deletionPending(r.deletionPending, { mail });
     // linkPending (section 2.4): the reset proved this account's mailbox; the identity pending in
     // this browser goes on it under §3.8's rules (only the account its address leads to, if any).
-    return json({ ...r, mail, ...(pend !== null ? linkAnswer(this.store.linkPending(r.userId, pend, now, marks), pend) : {}) });
+    return json({ ...r, mail, ...(pend !== null ? linkAnswer(this.store.linkPending(r.userId, pend, now, marks, r.authLvl ?? 0), pend) : {}) });
   }
 
   /**
@@ -1904,7 +1904,7 @@ export class AccountsDO extends DurableObject<Env> {
         // The right password, and a deletion pending: said only now (I6), nothing signed in or linked.
         if (r === 'deletion_pending') return deletionPending(s.deletionAt(b.userId));
         // linkPending: the identity pending in this browser goes on this account, in the same step (§3.8).
-        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks), pend) } : r);
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks, r.authLvl ?? 0), pend) } : r);
       }
       case '/refresh': {
         const next = grantOf(b.next);
@@ -1979,7 +1979,7 @@ export class AccountsDO extends DurableObject<Env> {
         if (r === 'deletion_pending') return error(409, 'deletion_pending', 'Esta cuenta tiene un borrado pendiente');
         if (linkTo !== null && replace !== null) s.revokeDevice(linkTo, replace);
         // "I already have one" (pend=1): the identity pending in this browser goes on the account it signed in to.
-        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks), pend) } : r);
+        return json(pend !== null ? { ...r, ...linkAnswer(s.linkPending(r.userId, pend, now, marks, r.authLvl ?? 0), pend) } : r);
       }
       case '/pending-match': {
         const pend = pendingOf(b.pending);

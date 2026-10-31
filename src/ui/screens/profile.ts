@@ -152,6 +152,15 @@ export function unlinkKeepsMaintainer(me: MeInfo): boolean {
 }
 
 /**
+ * The level VINCULAR asks for (the server's linkLevel): 1, or 2 for the project account, which only
+ * its password reaches, so "confirm it's you" offers the password and not a provider's page that
+ * the server would refuse after the round trip.
+ */
+export function linkLevel(me: MeInfo | null): 1 | 2 {
+  return me?.maintainer !== undefined ? 2 : 1;
+}
+
+/**
  * PRIVACIDAD's "News by email" switch shows (§3.14 step 2): an account with a verified address (news
  * only ever goes to one, and the server refuses a grant without it), no deletion pending, and not a
  * TV signed in with the phone (POST /api/me/consent takes a full session; a TV's /api/me has no address).
@@ -772,7 +781,7 @@ export function profileScreen(menu: Menu): Screen {
       usernameUntil,
       ...linked.map(linkedRow),
       // A link needs a credential proved on this browser in the last minutes: confirm it is you first.
-      ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true))), { 'data-key': 'profile-link-' + p })),
+      ...linkable.map((p) => secondary(t('profile.link', { provider: PROVIDER_NAMES[p].toUpperCase() }), () => fresh(() => (window.location.href = acc.oauthUrl(p, true)), linkLevel(me)), { 'data-key': 'profile-link-' + p })),
       secondary(t('profile.devices'), () => devicesDialog(), { 'data-key': 'profile-devices' }),
       secondary(
         t('profile.signOut'),
@@ -897,8 +906,8 @@ export function profileScreen(menu: Menu): Screen {
   /** The configured providers the account has not linked (VINCULAR on the banner and the grace sheet). */
   const unlinked = (me: MeInfo): OAuthProvider[] => emailProviders(menu).filter((p) => !me.providers.includes(p));
 
-  /** VINCULAR {provider}: once this browser is fresh(1) (a link adds a way in), the provider's page. */
-  const linkProvider = (p: OAuthProvider): void => fresh(() => (window.location.href = acc.oauthUrl(p, true)), 1);
+  /** VINCULAR {provider}: once this browser is fresh(1) (a link adds a way in; fresh(2) for the project account), the provider's page. */
+  const linkProvider = (p: OAuthProvider): void => fresh(() => (window.location.href = acc.oauthUrl(p, true)), linkLevel(acc.me));
 
   /**
    * The Correo row (§3.9): "{email}" with CAMBIAR CORREO, "Sin correo" with AGREGAR CORREO, or

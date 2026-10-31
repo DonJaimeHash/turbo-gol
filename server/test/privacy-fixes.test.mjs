@@ -322,3 +322,69 @@ test("a TV signed in with the phone gets the project account's /api/me without i
   for (const k of ['maintainer', 'email', 'emailHint']) assert.equal(k in onTv.json, false, `${k} on a TV: ${JSON.stringify(onTv.json)}`);
   assert.equal(onTv.headers.get('cache-control'), 'no-store');
 });
+
+// ---- the review of sign-in PR 10: the project account links a new way in at level 2 only ----------
+
+test('the project account links a provider only at level 2 (its password): VINCULAR after a Discord sign-in answers reauth_required and adds nothing; after the password it links; anyone else links at level 1', async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', discord: 'd-proyecto' });
+  const ana = await account(obj, 'Ana', { email: 'ana@example.com', discord: 'd-ana' });
+  env.NODE_TRUSTED_OPERATORS = project;
+  // Whoever holds the project's Discord: a press on Discord's page, level 1, fresh.
+  const d = await oauth(env, 'discord', 'd-proyecto', { ip: ip(0) });
+  assert.equal(d.done.location, '/#auth=ok');
+  const link = await oauth(env, 'google', 'g-intruso', { ip: ip(0), query: '?link=1', cookie: '__Host-tg_rt=' + d.rt });
+  assert.equal(link.done, null, 'the start never reaches Google');
+  assert.equal(link.start.location, '/#auth=error:reauth_required');
+  assert.equal(row(obj, project).google_sub, null, 'no Google added');
+  // "Confirm it's you" with Discord and then=link:google: the re-authentication stands, the link does not.
+  const chain = await req(env, 'GET', '/api/auth/oauth/discord/start?reauth=1&then=link:google', { ip: ip(0), cookie: '__Host-tg_rt=' + d.rt, origin: null });
+  assert.equal(chain.status, 302);
+  identity.discord = { id: 'd-proyecto' };
+  const st = cookieOf(chain.raw, '__Host-tg_oa');
+  const cb = await req(env, 'GET', `/api/auth/oauth/discord/callback?code=x&state=${new URL(chain.location).searchParams.get('state')}`, { ip: ip(0), cookie: '__Host-tg_oa=' + st, origin: null });
+  assert.equal(cb.location, '/#auth=error:reauth_required', 'not on to Google');
+  assert.ok(cb.rt, "the re-authentication's new token is set: this browser stays signed in");
+  const s = await refresh(env, cb.rt, ip(0));
+  assert.equal(s.status, 200);
+  assert.equal(row(obj, project).google_sub, null);
+  // The password ("confirm it's you", level 2): VINCULAR GOOGLE goes through.
+  const re = await post(env, '/api/auth/reauth', { ip: ip(0), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { password: KEY } });
+  assert.equal(re.status, 200, JSON.stringify(re.json));
+  const ok = await oauth(env, 'google', 'g-proyecto', { ip: ip(0), query: '?link=1', cookie: '__Host-tg_rt=' + (re.rt ?? s.rt) });
+  assert.equal(ok.done.location, '/#auth=linked');
+  assert.equal(row(obj, project).google_sub, 'g-proyecto');
+  // Anyone else links at level 1, as before.
+  const a = await oauth(env, 'discord', 'd-ana', { ip: ip(1) });
+  const al = await oauth(env, 'google', 'g-ana', { ip: ip(1), query: '?link=1', cookie: '__Host-tg_rt=' + a.rt });
+  assert.equal(al.done.location, '/#auth=linked');
+  assert.equal(row(obj, ana).google_sub, 'g-ana');
+});
+
+test("the project account takes a pending identity only at level 2: a Discord sign-in from the confirm sheet (pend=1) signs in and links nothing (ok:reauth_required); the password's sign-in links it", async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', discord: 'd-proyecto' });
+  env.NODE_TRUSTED_OPERATORS = project;
+  // An identity nobody owns waits in this browser (the confirm sheet: "I already have an account").
+  const g = await oauth(env, 'google', 'g-intruso', { ip: ip(0) });
+  assert.equal(g.done.location, '/#auth=confirm');
+  assert.ok(g.pend);
+  // Signing in with the project's Discord from there: signed in, the Google identity not linked.
+  const p = await oauth(env, 'discord', 'd-proyecto', { ip: ip(0), query: '?pend=1', cookie: '__Host-tg_pend=' + g.pend });
+  assert.equal(p.done.location, '/#auth=ok:reauth_required');
+  assert.ok(p.rt, 'the sign-in stands');
+  assert.equal(row(obj, project).google_sub, null, 'no Google added');
+  // The same with the password (level 2): linked.
+  const s = await post(env, '/api/auth/signin', { ip: ip(0), cookie: '__Host-tg_pend=' + g.pend, body: { email: 'proyecto@example.com', password: KEY, linkPending: true, ...TOK } });
+  assert.equal(s.status, 200, JSON.stringify(s.json));
+  assert.deepEqual(s.json.linked, ['google']);
+  assert.equal(row(obj, project).google_sub, 'g-intruso');
+  // The store's rule, for any sign-in it rides on: below level 2 nothing for the project account.
+  obj.store.sql.exec('UPDATE users SET google_sub = NULL, google_linked_at = NULL WHERE id = ?', project);
+  const pend = { p: 'google', id: 'g-otro', email: null, trust: 'none' };
+  assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map(), 1), 'reauth_required');
+  assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map()), 'reauth_required', 'no level said: none');
+  assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map(), 2), 'linked');
+});

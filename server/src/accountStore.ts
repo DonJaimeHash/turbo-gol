@@ -665,7 +665,7 @@ export interface EmailMatch {
 }
 
 /** linkPending's outcome: linked, or why not (the sign-in itself stands either way). */
-export type LinkPendingResult = 'linked' | 'wrong_account' | 'provider_set' | 'already_linked' | 'no_user';
+export type LinkPendingResult = 'linked' | 'wrong_account' | 'provider_set' | 'already_linked' | 'no_user' | 'reauth_required';
 
 const NO_EMAIL: ProviderEmail = { email: null, trust: 'none' };
 
@@ -1703,12 +1703,15 @@ export class AccountStore {
    * for each provider is free ('provider_set') and no account owns either identity
    * ('already_linked'). All or nothing; then the address fills the email in (step 6). `marks`: the
    * identities' and their addresses' mark keys (§3.13 step 4). A pending deletion links nothing.
+   * `lvl`: the level of the sign-in it rides on (2 a password or a reset, a provider's press 1); a
+   * maintainer account (§3.12) takes it at level 2 only ('reauth_required'), as linkLevel asks.
    */
-  linkPending(userId: string, pend: PendingIdentity, now: number, marks?: MarkKeys): LinkPendingResult {
+  linkPending(userId: string, pend: PendingIdentity, now: number, marks?: MarkKeys, lvl: 0 | 1 | 2 = 0): LinkPendingResult {
     const idents = pendingIdents(pend);
     return this.tx(() => {
       const u = this.userById(userId);
       if (u === null || num(u.banned) === 1 || this.pendingDeletion(u)) return 'no_user' as const;
+      if (lvl < 2 && this.maintainerIds.has(userId)) return 'reauth_required' as const;
       const match = this.pendingMatch(pend, now);
       if (match !== null && match.userId !== userId) return 'wrong_account' as const;
       for (const i of idents) {

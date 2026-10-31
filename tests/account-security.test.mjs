@@ -193,7 +193,8 @@ test('auth-3: PERFIL never sets a first password or mints codes from a Bearer: C
   assert.doesNotMatch(src, /newRecoveryCodes|codesDialog|showRecoveryCodes/, 'no recovery codes are minted any more');
   const ac = await readFile(new URL('../src/net/AccountClient.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(ac, /\/api\/auth\/(?:register|recovery-codes|password)'/, 'the routes PR 7 retired (410) are never called');
-  assert.match(src, /fresh\(\(\) => \(window\.location\.href = acc\.oauthUrl\(p, true\)\)\)/, 'a link');
+  // The level is linkLevel's: 1, or 2 for the project account (tests/maintainer-link-level.test.mjs).
+  assert.match(src, /fresh\(\(\) => \(window\.location\.href = acc\.oauthUrl\(p, true\)\)(?:, linkLevel\((?:me|acc\.me)\))?\)/, 'a link');
   assert.match(src, /fresh\(\(\) => \{\s*void acc\.unlink\(p\)/, 'an unlink');
   assert.match(src, /acc\.oauthUrl\(p, 'reauth'\)/, 'the provider round trip');
   assert.match(src, /await acc\.reauth\(pass\.input\.value\)/, 'or the password');

@@ -68,9 +68,11 @@
  *     identity is linked to it; one email, one account. A Discord address is only a hint (trust
  *     'asserted'); an address an email sign-up claimed leads to that account (via 'email').
  *     link=1 (PERFIL's VINCULAR) needs this browser's refresh cookie, not a TV's, and a credential
- *     proved on it in the last REAUTH_WINDOW_S (a sign-in, or reauth=1 just before); otherwise the
- *     start answers /#auth=error:reauth_required (or link_expired without a valid cookie) and never
- *     turns into a sign-up. A link never replaces the account's own id of that provider (409
+ *     proved on it in the last REAUTH_WINDOW_S (a sign-in, or reauth=1 just before), at level 2
+ *     for the project's accounts (linkLevel: their password; a pend=1 sign-in below it links
+ *     nothing either, linkError reauth_required); otherwise the start answers
+ *     /#auth=error:reauth_required (or link_expired without a valid cookie) and never turns into a
+ *     sign-up. A link never replaces the account's own id of that provider (409
  *     provider_set: POST /api/auth/unlink first). reauth=1 signs in again with a provider already
  *     on the account (another identity: /#auth=error:reauth_mismatch, nothing signed in or made)
  *     and moves this browser's credential proof to now. Either way this browser's old token goes
@@ -86,11 +88,12 @@
  * sets one (signup/finish, reset) or a code from the account's mailbox (reauth/code/verify), 1 a
  * press on the provider's page (Google's account chooser, Discord's prompt=consent), 0 nothing (a
  * TV, a family from before levels). A refresh keeps it and never raises it. requireFresh(c, level)
- * asks for it: a link needs 1; an unlink 1, or 2 when one way in would be left; the maintainer
- * routes (nodeRoutes.ts) always 2, which a maintainer reaches with its password only (reauth/code
- * refuses NODE_TRUSTED_OPERATORS). Every primary sign-in of such an account (login, signin, recover,
- * reset, the email undo, a provider's callback) and every level-2 re-authentication of it posts an
- * ALERT line to the staff channel, with the method and the country only (maintainerAlert, §3.12).
+ * asks for it: a link needs 1 (2 for a maintainer: linkLevel); an unlink 1, or 2 when one way in
+ * would be left; the maintainer routes (nodeRoutes.ts) always 2, which a maintainer reaches with
+ * its password only (reauth/code refuses NODE_TRUSTED_OPERATORS). Every primary sign-in of such an
+ * account (login, signin, recover, reset, the email undo, a provider's callback) and every level-2
+ * re-authentication of it posts an ALERT line to the staff channel, with the method and the
+ * country only (maintainerAlert, §3.12).
  *   POST /api/auth/tv/start   { turnstileToken? } (no session)  -> TvStartAnswer: a TV signing in with the phone (the
  *                             Turnstile gate as POST /api/guest; 503 busy when its network holds too many codes)
  *   POST /api/auth/tv/info    Bearer (account) { code }         -> TvInfoAnswer: where that TV is (request.cf at its
@@ -843,6 +846,15 @@ export function requireFresh(c: Pick<RouteContext, 'session'>, level: AuthLevel,
   return s;
 }
 
+/**
+ * The level a link of `userId` needs (R6): 1, a press on a provider's page; 2 for the project's
+ * accounts (NODE_TRUSTED_OPERATORS, §3.12), which only a password reaches (reauth/code refuses them
+ * the mailbox's), so whoever holds one of its providers cannot add a provider of their own.
+ */
+export function linkLevel(env: Pick<Env, 'NODE_TRUSTED_OPERATORS'>, userId: string): 1 | 2 {
+  return trustedOperatorIds(env).has(userId) ? 2 : 1;
+}
+
 /** The level a session is fresh at (R6): its aal while its aat is within `windowS`, else 0 (requireFresh's rule; a route whose need the AccountsDO decides passes it on). */
 export function freshLevel(s: SessionClaims, windowS: number = REAUTH_WINDOW_S, nowS: number = nowSeconds()): 0 | 1 | 2 {
   if (s.tv === 1 || typeof s.aat !== 'number' || nowS - s.aat > windowS || s.aat > nowS + 60) return 0;
@@ -1329,8 +1341,8 @@ async function oauthStart(c: RouteContext, provider: OAuthProvider, url: URL): P
     if (r === null || !r.ok) return redirect('/#auth=error:link_expired');
     if (r.data.kind === 'tv') return redirect('/#auth=error:tv_session');
     const authAt = typeof r.data.authAt === 'number' ? r.data.authAt : 0;
-    // A link adds a way in: fresh(1) (R6), so a silent sign-in, a refresh of before levels or a TV never links.
-    if (mode === 'link' && (authAt <= 0 || Date.now() - authAt > REAUTH_WINDOW_S * 1000 || (r.data.authLvl ?? 0) < 1)) return redirect('/#auth=error:reauth_required');
+    // A link adds a way in: fresh(1) (R6), so a silent sign-in, a refresh of before levels or a TV never links; the project's accounts fresh(2) (linkLevel).
+    if (mode === 'link' && (authAt <= 0 || Date.now() - authAt > REAUTH_WINDOW_S * 1000 || (r.data.authLvl ?? 0) < linkLevel(c.env, r.data.userId))) return redirect('/#auth=error:reauth_required');
     if (mode === 'link') link = r.data.userId;
     else re = r.data.userId;
     dev = r.data.device;
@@ -1430,7 +1442,11 @@ async function oauthCallback(c: RouteContext, provider: OAuthProvider, url: URL)
     // so the link's state is made here, for this browser's new token, instead of a start that reads
     // the SameSite=Strict cookie (a redirect chain from the provider would not send it).
     const next = st.then !== undefined ? providerConfig(c.env, st.then) : null;
-    if (st.then !== undefined && next !== null && lvl >= 1 && typeof refresh.family === 'string') return authorizeRedirect(c, st.then, next, { link: st.re, dev: refresh.family }, false, [refreshCookie(refreshTok)]);
+    if (st.then !== undefined && next !== null && lvl >= 1 && typeof refresh.family === 'string') {
+      // A project account links at level 2 only (linkLevel): a provider's press goes no further than this re-authentication.
+      if (lvl < linkLevel(c.env, st.re)) return redirect('/#auth=error:reauth_required', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
+      return authorizeRedirect(c, st.then, next, { link: st.re, dev: refresh.family }, false, [refreshCookie(refreshTok)]);
+    }
     return redirect('/#auth=reauth', [clearCookie(OAUTH_COOKIE, 'Lax'), refreshCookie(refreshTok)]);
   }
   const pending = st.link === null && st.pend === 1 ? await readPending(c) : null;
