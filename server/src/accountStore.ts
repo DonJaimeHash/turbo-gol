@@ -86,6 +86,9 @@
  * binds a marked key (a sign-up, a claim, an add or a move of the email, a link, the confirm step's
  * create) gets what is left of the sanction (applyMarksIn), and is not told.
  *   deleted_nodes    purged ids whose nodes the NodeRegistryDO has not banned yet (the alarm asks again)
+ *   consent_proofs   what the purge keeps of the consent log: each row's kind, version, granted or
+ *                    withdrawn and time, by the tombstoned id (no source, address or name), for
+ *                    CONSENT_PROOF_KEEP_MS from the purge, so a past consent or withdrawal can be shown
  *
  * The news consent (sign-in PR 13, the design's §2.11 and §3.14; no news is sent yet): the consent
  * log only grows and its newest news row is the state. The switch at sign-up and at the confirm
@@ -248,6 +251,13 @@ export const CANCEL_AGAIN_MS = 10 * 60_000;
 const MARK_ABANDONS_MAX = 50;
 /** consents.source of the news withdrawal a deletion request writes. */
 export const DELETION_CONSENT_SOURCE: ConsentSource = 'deletion';
+/**
+ * How long a purged account's consent proofs stay (consent_proofs, from the purge): 2 years, the
+ * privacy draft's `[2 años]` for keeping the proof of a request and its answer (Política §6,
+ * ABOGADO D39; D13 asks whether a proof of consent must outlive the account and names no period).
+ * A placeholder until the lawyer answers.
+ */
+export const CONSENT_PROOF_KEEP_MS = 2 * 365 * DAY_MS;
 
 /** A sanction mark's kind (sanction_marks.key, §1.3): 'e' an email canon (its own, its hint's, a held one), 'g' a Google sub, 'd' a Discord id. */
 export type MarkKind = 'e' | 'g' | 'd';
@@ -843,9 +853,10 @@ export class AccountStore {
    * 'not_due'), never the project's account ('maintainer': its deletion is called off), and `keys`
    * holding the key of every value it has now ('retry' otherwise: a value changed since they were
    * made). Then, with a sanction in force, a sanction_marks row per key (a mark already there keeps
-   * the later end of each); then every row of the account (PURGE_TABLES, users, its mail tokens);
-   * then its tombstone. Idempotent: a purged account is 'gone', and nothing of another one is read
-   * or written but the marks it shares a key with.
+   * the later end of each); then its consent log's proof (consent_proofs: kind, version, granted,
+   * time); then every row of the account (PURGE_TABLES, users, its mail tokens); then its
+   * tombstone. Idempotent: a purged account is 'gone', and nothing of another one is read or
+   * written but the marks it shares a key with.
    */
   purgeAccount(userId: string, keys: MarkKeys, now: number): { result: PurgeResult; marks: number } {
     return this.tx(() => {
@@ -876,6 +887,11 @@ export class AccountStore {
           marks++;
         }
       }
+      // The proof of what it consented to and withdrew outlives it: no source, address or name, only the tombstoned id.
+      this.sql.exec(
+        'INSERT INTO consent_proofs (deleted_id, kind, version, granted, at, until) SELECT user_id, kind, version, granted, at, ? FROM consents WHERE user_id = ? ORDER BY id',
+        now + CONSENT_PROOF_KEEP_MS, userId,
+      );
       for (const table of PURGE_TABLES) this.sql.exec(`DELETE FROM ${table} WHERE user_id = ?`, userId);
       // Its mailed proofs: its own rows, and the sign-up rows it was made from (used_by).
       this.sql.exec('DELETE FROM mail_tokens WHERE user_id = ? OR used_by = ?', userId, userId);
@@ -889,6 +905,14 @@ export class AccountStore {
   /** `id` is a purged account's (deleted_ids). */
   isDeleted(id: string): boolean {
     return this.sql.exec('SELECT 1 AS x FROM deleted_ids WHERE id = ?', id).toArray().length > 0;
+  }
+
+  /** What a purged account consented to and withdrew (consent_proofs), the oldest first: the proof that outlives it. */
+  consentProofs(deletedId: string): Array<{ kind: string; version: string; granted: boolean; at: number }> {
+    return this.sql
+      .exec('SELECT kind, version, granted, at FROM consent_proofs WHERE deleted_id = ? ORDER BY at, rowid', deletedId)
+      .toArray()
+      .map((r) => ({ kind: str(r.kind), version: str(r.version), granted: num(r.granted) === 1, at: num(r.at) }));
   }
 
   /** Purged ids whose nodes the NodeRegistryDO has not answered for yet (/operator-deleted: deleted_nodes), the oldest first. */
@@ -998,6 +1022,10 @@ export class AccountStore {
     s.exec('CREATE TABLE IF NOT EXISTS legacy_reminders (user_id TEXT PRIMARY KEY, cutoff INTEGER NOT NULL, at INTEGER NOT NULL)');
     // Sign-in PR 12: purged ids the NodeRegistryDO has not answered for yet (their nodes to ban; the alarm tries again). Additive.
     s.exec('CREATE TABLE IF NOT EXISTS deleted_nodes (id TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+    // The purge's proof of a consent or a withdrawal (data inventory I7): the tombstoned id, no personal data, until `until`. Additive.
+    s.exec('CREATE TABLE IF NOT EXISTS consent_proofs (deleted_id TEXT NOT NULL, kind TEXT NOT NULL, version TEXT NOT NULL, granted INTEGER NOT NULL, at INTEGER NOT NULL, until INTEGER NOT NULL)');
+    s.exec('CREATE INDEX IF NOT EXISTS consent_proofs_id ON consent_proofs(deleted_id)');
+    s.exec('CREATE INDEX IF NOT EXISTS consent_proofs_until ON consent_proofs(until)');
     // Sign-in PR 13: every news grant has its unsubscribe id, the sign-ups of before too. Additive.
     this.mintMissingUnsubIds();
   }
@@ -2931,8 +2959,9 @@ export class AccountStore {
    * Daily cleanup: expired refresh tokens, locks and bans, old abandons and ranked results (never
    * the hosts' shop); and the sign-in tables: mail tokens a day past their expiry, undo holds past
    * their end, throttle rows outside their window and unlocked, mail caps whose windows are over,
-   * the mail days older than 30 days and sanction marks past their end. Never the consents (the
-   * log), the tombstones (deleted_ids) or meta.
+   * the mail days older than 30 days, sanction marks past their end and a purged account's consent
+   * proofs past CONSENT_PROOF_KEEP_MS. Never the consents (the log), the tombstones (deleted_ids) or
+   * meta.
    */
   prune(now: number): void {
     this.tx(() => {
@@ -2950,6 +2979,7 @@ export class AccountStore {
       // mail_day.day is a UTC date (mailCaps.ts mailDay): the rows of days before the kept ones go.
       this.sql.exec('DELETE FROM mail_day WHERE day < ?', new Date(now - MAIL_DAY_KEEP_DAYS * DAY_MS).toISOString().slice(0, 10));
       this.sql.exec('DELETE FROM sanction_marks WHERE until <= ?', now);
+      this.sql.exec('DELETE FROM consent_proofs WHERE until <= ?', now);
     });
   }
 }
