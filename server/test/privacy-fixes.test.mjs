@@ -2,7 +2,8 @@
 // takes that provider's email hint with it; the purge keeps a proof of each consent and withdrawal
 // with no personal data (consent_proofs, CONSENT_PROOF_KEEP_MS); a TV's /api/me carries no
 // maintainer checklist; the project account (NODE_TRUSTED_OPERATORS) links a new way in only at
-// level 2 (its password), and its address never moves to another account, which posts its ALERT;
+// level 2 (its password), adds an address at level 2 too while it has a password, and its address
+// never moves to another account, which posts its ALERT;
 // no console line carries a callback's code or an unsubscribe id. Through the real Worker (index.ts)
 // in front of a real AccountsDO on node:sqlite, as maintainer.test.mjs runs them. The webhook, the
 // providers, the mail binding and Turnstile are fakes: nothing leaves this machine.
@@ -387,6 +388,68 @@ test("the project account takes a pending identity only at level 2: a Discord si
   assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map(), 1), 'reauth_required');
   assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map()), 'reauth_required', 'no level said: none');
   assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map(), 2), 'linked');
+});
+
+// The review of this PR: an address is a way in too (its reset link is level 2), so the project
+// account adds one at level 2 while it has a password (accountRoutes.ts emailLevel).
+const claimsOf = (jwt) => JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
+const mailCode = (m) => /^(\d{6})$/m.exec(m?.text ?? '')?.[1] ?? null;
+const postsSince = (from) => posts.slice(from).map((p) => p.content);
+
+test("the project account with a password and no address adds one only at level 2: after a Discord sign-in POST /api/me/email answers reauth_required { level: 2 } and mails nothing, so no reset link reaches the intruder's mailbox; after the password it goes; without a password it adds at level 1 and the staff channel hears of it; anyone else adds at level 1", async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  // A password and Discord, no verified address (PERFIL's checklist: verifiedEmail false).
+  const mant = await account(obj, 'Mantdos', { discord: 'd-mantdos' });
+  // A project account with Discord only, no password yet: level 1 is all it can reach.
+  const bare = await account(obj, 'Mantres', { pw: false, discord: 'd-mantres' });
+  const ana = await account(obj, 'Ana', { discord: 'd-ana' });
+  env.NODE_TRUSTED_OPERATORS = [mant, bare].join(',');
+  // Whoever holds the project's Discord: a press on Discord's page, level 1, fresh.
+  const d = await oauth(env, 'discord', 'd-mantdos', { ip: ip(0) });
+  assert.ok(d.rt, JSON.stringify(d.done?.location));
+  const s = await refresh(env, d.rt, ip(0));
+  assert.equal(s.status, 200);
+  assert.equal(claimsOf(s.json.session).aal, 1);
+  assert.deepEqual((await req(env, 'GET', '/api/me', { ip: ip(0), bearer: s.json.session })).json.maintainer, { password: true, verifiedEmail: false, waysIn: 2 });
+  const sent = outbox.length;
+  const add = await post(env, '/api/me/email', { ip: ip(0), bearer: s.json.session, body: { email: 'intruso@example.net', lang: 'es' } });
+  assert.deepEqual([add.status, add.json.error, add.json.level], [403, 'reauth_required', 2], JSON.stringify(add.json));
+  assert.deepEqual(outbox.slice(sent).map((m) => m.to), [], 'no code to the intruder mailbox');
+  assert.equal(row(obj, mant).email, null);
+  // The review's next step, a reset link to that address: there is no account behind it to mail.
+  assert.equal((await post(env, '/api/auth/forgot', { ip: ip(2), body: { email: 'intruso@example.net', lang: 'es', ...TOK } })).status, 200);
+  assert.deepEqual(outbox.slice(sent).map((m) => m.to), [], 'no reset link either');
+  // The password ("confirm it's you", level 2): the add goes, with its code to the address.
+  const re = await post(env, '/api/auth/reauth', { ip: ip(0), bearer: s.json.session, cookie: '__Host-tg_rt=' + s.rt, body: { password: KEY } });
+  assert.equal(re.status, 200, JSON.stringify(re.json));
+  assert.equal(claimsOf(re.json.session).aal, 2);
+  const ok = await post(env, '/api/me/email', { ip: ip(0), bearer: re.json.session, body: { email: 'mantdos@example.com', lang: 'es' } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  const m5 = outbox.filter((m) => m.to === 'mantdos@example.com').at(-1);
+  assert.ok(mailCode(m5), 'M5 with its code');
+  const v = await post(env, '/api/me/email/verify', { ip: ip(0), bearer: re.json.session, body: { attempt: ok.json.attempt, code: mailCode(m5), lang: 'es' } });
+  assert.equal(v.status, 200, JSON.stringify(v.json));
+  assert.equal(row(obj, mant).email, 'mantdos@example.com');
+  // No password yet: the add stays at level 1 (no lockout of the first address), and the ALERT says so.
+  const b = await oauth(env, 'discord', 'd-mantres', { ip: ip(1) });
+  const bs = await refresh(env, b.rt, ip(1));
+  assert.equal(claimsOf(bs.json.session).aal, 1);
+  const from = posts.length;
+  const badd = await post(env, '/api/me/email', { ip: ip(1), bearer: bs.json.session, body: { email: 'mantres@example.com', lang: 'es' } });
+  assert.equal(badd.status, 200, JSON.stringify(badd.json));
+  const got = postsSince(from);
+  assert.deepEqual(got, [`**ALERT** \`maintainer Mantres (${bare}) asked to add an email at level 1 (it has no password yet), from AR\``]);
+  for (const x of ['@', '198.18.']) assert.ok(!got[0].includes(x), `no ${x} in ${got[0]}`);
+  // Anyone else with a password and no address adds at level 1, as before, and no ALERT.
+  const a = await oauth(env, 'discord', 'd-ana', { ip: ip(3) });
+  const as = await refresh(env, a.rt, ip(3));
+  assert.equal(claimsOf(as.json.session).aal, 1);
+  const before = posts.length;
+  const aadd = await post(env, '/api/me/email', { ip: ip(3), bearer: as.json.session, body: { email: 'ana@example.com', lang: 'es' } });
+  assert.equal(aadd.status, 200, JSON.stringify(aadd.json));
+  assert.deepEqual(postsSince(before), []);
+  assert.equal(row(obj, ana).email, null, 'not before its code');
 });
 
 // ---- the review of sign-in PR 10: the project account's address never moves to another account ----

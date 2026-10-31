@@ -88,9 +88,10 @@
  * sets one (signup/finish, reset) or a code from the account's mailbox (reauth/code/verify), 1 a
  * press on the provider's page (Google's account chooser, Discord's prompt=consent), 0 nothing (a
  * TV, a family from before levels). A refresh keeps it and never raises it. requireFresh(c, level)
- * asks for it: a link needs 1 (2 for a maintainer: linkLevel); an unlink 1, or 2 when one way in
- * would be left; the maintainer routes (nodeRoutes.ts) always 2, which a maintainer reaches with
- * its password only (reauth/code refuses NODE_TRUSTED_OPERATORS). Every primary sign-in of such an
+ * asks for it: a link needs 1 (2 for a maintainer: linkLevel); an email's add 1 (2 for a maintainer
+ * with a password: emailLevel), its change 2; an unlink 1, or 2 when one way in would be left; the
+ * maintainer routes (nodeRoutes.ts) always 2, which a maintainer reaches with its password only
+ * (reauth/code refuses NODE_TRUSTED_OPERATORS). Every primary sign-in of such an
  * account (login, signin, recover, reset, the email undo, a provider's callback) and every level-2
  * re-authentication of it posts an ALERT line to the staff channel, with the method and the
  * country only (maintainerAlert, §3.12).
@@ -855,6 +856,17 @@ export function linkLevel(env: Pick<Env, 'NODE_TRUSTED_OPERATORS'>, userId: stri
   return trustedOperatorIds(env).has(userId) ? 2 : 1;
 }
 
+/**
+ * The level POST /api/me/email needs (R6): 1 to add an address, 2 to change one (an account that has
+ * one reaches 2). The project's accounts with a password add one at 2 as well (§3.12): an address
+ * added at level 1 would reach 2 by its reset link, so whoever holds one of their providers would
+ * get past linkLevel. Without a password a project account adds at 1, its ceiling, so the owner is
+ * never locked out of its first address; the staff channel hears of it (maintainerAlert 'emailAdd').
+ */
+export function emailLevel(env: Pick<Env, 'NODE_TRUSTED_OPERATORS'>, userId: string, me: { emailVerified?: boolean; hasPassword?: boolean }): 1 | 2 {
+  return me.emailVerified === true || (me.hasPassword === true && trustedOperatorIds(env).has(userId)) ? 2 : 1;
+}
+
 /** The level a session is fresh at (R6): its aal while its aat is within `windowS`, else 0 (requireFresh's rule; a route whose need the AccountsDO decides passes it on). */
 export function freshLevel(s: SessionClaims, windowS: number = REAUTH_WINDOW_S, nowS: number = nowSeconds()): 0 | 1 | 2 {
   if (s.tv === 1 || typeof s.aat !== 'number' || nowS - s.aat > windowS || s.aat > nowS + 60) return 0;
@@ -886,13 +898,16 @@ const MAINTAINER_PROOF = {
   reauthCode: 'confirmed it is them with a code by email (level 2)',
   // Not a sign-in: another account asked for its address (POST /api/me/email), which never moves (§3.12).
   emailMove: 'kept its email: another account asked for it (refused)',
+  // Not a sign-in: a project account with no password yet asked to add an address at level 1 (emailLevel).
+  emailAdd: 'asked to add an email at level 1 (it has no password yet)',
 } as const;
 export type MaintainerProof = keyof typeof MAINTAINER_PROOF;
 
 /**
  * Every primary sign-in of a NODE_TRUSTED_OPERATORS account, every level-2 re-authentication of one
  * and every request of another account for its address (emailMove, refused: §3.12, within that
- * address's mail cap): an ALERT line in the Worker's log and on the staff channel
+ * address's mail cap) or of one with no password for a first address at level 1 (emailAdd, within
+ * its account's mail cap, 10 a day): an ALERT line in the Worker's log and on the staff channel
  * (NODE_ALERT_WEBHOOK, nodeAlerts.ts AlertHook.audit: each one posted, none merged with another or
  * left out by a limit), after the answer (waitUntil). It names the account, the method and the
  * country of the request (request.cf), and never an IP or an email, nor the other account, so a
@@ -2026,8 +2041,9 @@ async function reauthCodeVerify(c: RouteContext): Promise<Response> {
 //   POST /api/me/email            Bearer { email, lang } -> { attempt, resendAt, to }: the same answer for any
 //                                 address (I6; M5 with the code, or M7 to an address another account holds) |
 //                                 400 bad_email / same_email | 403 reauth_required { level } (an add fresh(1), a
-//                                 change fresh(2); a legacy key first re-keyed: level 2) | 409 email_locked
-//                                 { until } | 429 | 503. Not from a TV.
+//                                 change fresh(2); a legacy key first re-keyed: level 2; a project account's add
+//                                 fresh(2) while it has a password: emailLevel) | 409 email_locked { until } | 429 |
+//                                 503. Not from a TV.
 //   POST /api/me/email/verify     Bearer (+ cookie) { attempt, code } -> MeInfo: the add, the change (M6 with the
 //                                 7-day undo to the old address, which is held; the other devices signed out) or
 //                                 the move (M12) | 400 code_wrong | 410 code_expired | 409 email_taken / move_refused |
@@ -2076,20 +2092,22 @@ async function legacyGate(c: RouteContext): Promise<Response | null> {
   return L.phase === 'closed' ? json({ ...LEGACY_CLOSED, until: L.until }, 410) : null;
 }
 
-/** POST /api/me/email (§2.6): an add (fresh(1)) or a change (fresh(2)) of the account's address, proved by a code to it. */
+/** POST /api/me/email (§2.6): an add (fresh(1); a project account's, fresh(2) with a password) or a change (fresh(2)) of the account's address, proved by a code to it. */
 async function meEmail(c: RouteContext): Promise<Response> {
   const s = requirePrimary(c);
   if (s instanceof Response) return s;
   const b = await readJson<{ email?: unknown; lang?: unknown }>(c.request);
   if (!b) return error(400, 'bad_request');
   if (normalizeEmail(b.email) === null) return error(400, 'bad_email', 'Revisa el correo: no parece una dirección válida');
-  const me = await accountsJson<{ emailVerified?: boolean; legacy?: boolean }>(c.env, '/me?userId=' + encodeURIComponent(s.sub));
+  const me = await accountsJson<{ name?: string; emailVerified?: boolean; hasPassword?: boolean; legacy?: boolean }>(c.env, '/me?userId=' + encodeURIComponent(s.sub));
   if (!me.ok) return pass(me.res);
   // A password still salted with the name is re-keyed first ("confirm it's you" with it): an address
   // never sits beside a key no route signs in with (§3.10 step 8: reauth works at any time).
   if (me.data.legacy === true) return reauthRequired(2);
   // An add needs fresh(1), a change fresh(2) (R6); an account that has an address has a level-2 proof.
-  const fresh = requireFresh(c, me.data.emailVerified === true ? 2 : 1);
+  // A project account's add needs fresh(2) while it has a password (emailLevel): its reset link is level 2.
+  const level = emailLevel(c.env, s.sub, me.data);
+  const fresh = requireFresh(c, level);
   if (fresh instanceof Response) return fresh;
   const off = await mailRefusal(c);
   if (off !== null) return off;
@@ -2099,6 +2117,8 @@ async function meEmail(c: RouteContext): Promise<Response> {
   sendMail(c, r.data.mail);
   // The project account's address asked for: never moved (a decoy row, the same answer), and the staff channel hears of it.
   if (r.data.alert !== undefined) maintainerAlert(c, r.data.alert, 'emailMove');
+  // A project account with no password adds its first address at level 1 (no lockout): the staff channel hears of it.
+  if (level === 1 && me.data.emailVerified !== true) maintainerAlert(c, { userId: s.sub, username: typeof me.data.name === 'string' ? me.data.name : s.sub }, 'emailAdd');
   return json({ attempt, resendAt: r.data.resendAt, to: r.data.to } satisfies CodeStartAnswer, 200, NO_STORE);
 }
 

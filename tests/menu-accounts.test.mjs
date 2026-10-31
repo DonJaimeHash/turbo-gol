@@ -1530,7 +1530,8 @@ test("PERFIL (sign-in PR 9): the grace sheet right after a username's sign-in, t
   assert.match(view, /h\('div\.mn-prof-col', null, graceBanner\(me\), id,/, 'the banner first: its first button takes the first focus');
   assert.match(view, /emailRow\(me\),\s*passwordRow\(me\),\s*usernameUntil,/);
   assert.match(fnOf(PROFILE, 'graceBanner'), /'data-autofocus': true/);
-  assert.match(fnOf(PROFILE, 'emailDialog'), /fresh\(open, change \|\| legacy \? 2 : 1, legacy, 'email:' \+ mode\);/, 'an add fresh(1), a change fresh(2), a password of before re-keyed first');
+  // The add's level is emailAddLevel's: 1, or 2 for the project account with a password (tests/maintainer-link-level.test.mjs).
+  assert.match(fnOf(PROFILE, 'emailDialog'), /fresh\(open, change \|\| legacy \? 2 : (?:1|emailAddLevel\(me\)), legacy, 'email:' \+ mode\);/, 'an add fresh(1), a change fresh(2), a password of before re-keyed first');
   const game = await readFile(new URL('../src/game/Game.ts', import.meta.url), 'utf8');
   assert.match(game, /toggleAttribute\('data-profile-dot', id !== null && me !== null && me\.playerId === id && emailNudge\(me, this\.accounts\.account\?\.tv === true\) !== null\)/);
   assert.match(game, /void this\.accounts\.sendLanguageChoice\(\)/);

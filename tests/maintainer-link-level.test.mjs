@@ -2,7 +2,8 @@
 // at level 2, which only its password reaches (server/src/accountRoutes.ts linkLevel; the server's
 // test is server/test/privacy-fixes.test.mjs). PERFIL's VINCULAR asks for that level first, so its
 // "confirm it's you" offers the password, never a provider's page the server would refuse after the
-// round trip; every other account still links after a provider's press (level 1).
+// round trip; every other account still links after a provider's press (level 1). AGREGAR CORREO
+// asks for level 2 too on the project account while it has a password (the server's emailLevel).
 //   node --test tests/maintainer-link-level.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -40,6 +41,15 @@ test('VINCULAR asks for level 2 on the project account (its password) and level 
   assert.equal(P.linkLevel(me({ password: false, verifiedEmail: false, waysIn: 1 })), 2, 'a project account without its password yet: still 2 (the server refuses less)');
   assert.equal(P.linkLevel(me(null)), 1);
   assert.equal(P.linkLevel(null), 1, 'no /api/me yet: the server decides');
+});
+
+test('AGREGAR and CONFIRMAR CORREO ask for level 2 on the project account while it has a password (an address is a way in: its reset link), level 1 without one and on any other account', () => {
+  assert.equal(P.emailAddLevel(me({ password: true, verifiedEmail: false, waysIn: 2 })), 2);
+  assert.equal(P.emailAddLevel(me({ password: false, verifiedEmail: false, waysIn: 1 })), 1, 'no password yet: 1, its only level, so the owner can add its first address');
+  assert.equal(P.emailAddLevel(me(null)), 1);
+  assert.equal(P.emailAddLevel(null), 1, 'no /api/me yet: the server decides');
+  // The Correo row's dialog asks for it (a change, or a password of before, still 2).
+  assert.match(PROFILE, /fresh\(open, change \|\| legacy \? 2 : emailAddLevel\(me\), legacy, 'email:' \+ mode\)/);
 });
 
 test('both VINCULAR buttons (PERFIL\'s list and the banner and grace sheet) ask for linkLevel, not a fixed level 1', () => {

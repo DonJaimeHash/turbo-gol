@@ -161,6 +161,15 @@ export function linkLevel(me: MeInfo | null): 1 | 2 {
 }
 
 /**
+ * The level AGREGAR and CONFIRMAR CORREO ask for (the server's emailLevel): 1, or 2 for the project
+ * account while it has a password (an address added at level 1 would reach 2 by its reset link).
+ * Without one it stays 1, the only level it can reach, so the owner can still add its first address.
+ */
+export function emailAddLevel(me: MeInfo | null): 1 | 2 {
+  return me?.maintainer?.password === true ? 2 : 1;
+}
+
+/**
  * PRIVACIDAD's "News by email" switch shows (§3.14 step 2): an account with a verified address (news
  * only ever goes to one, and the server refuses a grant without it), no deletion pending, and not a
  * TV signed in with the phone (POST /api/me/consent takes a full session; a TV's /api/me has no address).
@@ -929,9 +938,10 @@ export function profileScreen(menu: Menu): Screen {
 
   /**
    * AGREGAR, CAMBIAR or CONFIRMAR (§3.6 steps 2 to 4): "confirm it's you" first when this browser is
-   * not fresh enough (1 to add or confirm, 2 to change; a password of before is re-keyed by itself
-   * first, level 2), then the address and its code. `direct`: the banner's ENVIAR CÓDIGO for a hint,
-   * the code straight away. A provider's round trip comes back to it (the marker keepResume).
+   * not fresh enough (1 to add or confirm, 2 for the project account with a password: emailAddLevel;
+   * 2 to change; a password of before is re-keyed by itself first, level 2), then the address and
+   * its code. `direct`: the banner's ENVIAR CÓDIGO for a hint, the code straight away. A provider's
+   * round trip comes back to it (the marker keepResume).
    */
   const emailDialog = (mode: 'add' | 'change' | 'confirm', direct = false): void => {
     const me = acc.me;
@@ -947,7 +957,7 @@ export function profileScreen(menu: Menu): Screen {
       }
       emailSheet(menu, change ? t('auth.emailChangeTitle') : mode === 'confirm' ? t('auth.emailConfirmTitle') : t('auth.emailAddTitle'), mode === 'confirm' ? hint : '', hooks);
     };
-    fresh(open, change || legacy ? 2 : 1, legacy, 'email:' + mode);
+    fresh(open, change || legacy ? 2 : emailAddLevel(me), legacy, 'email:' + mode);
   };
 
   /** Right after a username's sign-in (§3.10 step 3): "Agrega tu correo", its date while there is one. */
