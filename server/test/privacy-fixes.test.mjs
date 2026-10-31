@@ -453,3 +453,56 @@ test("a move row made before the account was trusted cannot take the project acc
   assert.deepEqual([v.status, v.json.error], [409, 'move_refused']);
   assert.equal(row(obj, project).email, 'proyecto@example.com');
 });
+
+// ---- data inventory I20: no console line of ours carries a callback's code or an unsubscribe id -----
+
+/** Every console line written while `fn` runs (the Worker's own lines: what Workers Logs keeps besides each request's URL). */
+async function consoleDuring(fn) {
+  const lines = [];
+  const saved = {};
+  for (const k of ['log', 'warn', 'error', 'info', 'debug']) {
+    saved[k] = console[k];
+    console[k] = (...a) => lines.push(a.map((x) => (x instanceof Error ? `${x.name}: ${x.message} ${x.stack ?? ''}` : typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
+  }
+  try {
+    await fn();
+  } finally {
+    Object.assign(console, saved);
+  }
+  return lines;
+}
+
+test("the URLs that carry an identifier in their query (the OAuth callback's code and state, the one-click unsubscribe's id) reach no console line, on success or failure", async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const id = await account(obj, 'Ana', { email: 'ana@example.com', discord: 'd-ana' });
+  assert.deepEqual(obj.store.setNews(id, true, Date.now()), { news: true, terms: null });
+  const unsub = row(obj, id).unsub_id;
+  assert.match(unsub, S.UNSUB_ID_RE);
+  const CODE = 'Zq7callbackCodeSecret';
+  let states = [];
+  const lines = await consoleDuring(async () => {
+    // A sign-in, a callback whose token exchange fails (its status line), a replayed state, a provider's refusal.
+    const ok = await oauth(env, 'discord', 'd-ana', { ip: ip(0), code: CODE });
+    assert.equal(ok.done.location, '/#auth=ok');
+    tokenStatus.code = 400;
+    const bad = await oauth(env, 'discord', 'd-ana', { ip: ip(0), code: CODE });
+    tokenStatus.code = 200;
+    assert.equal(bad.done.location, '/#auth=error:provider_error');
+    states = [ok, bad].map((x) => new URL(x.start.location).searchParams.get('state'));
+    const replay = await req(env, 'GET', `/api/auth/oauth/discord/callback?code=${CODE}&state=${states[0]}`, { ip: ip(0), cookie: '__Host-tg_oa=' + cookieOf(ok.start.raw, '__Host-tg_oa'), origin: null });
+    assert.equal(replay.location, '/#auth=error:bad_state');
+    const refused = await req(env, 'GET', `/api/auth/oauth/discord/callback?error=access_denied&state=${states[0]}&code=${CODE}`, { ip: ip(0), origin: null });
+    assert.equal(refused.location, '/#auth=error:cancelled');
+    // RFC 8058's one-click (the id in the query), a malformed body, then the page's JSON form with a spent id.
+    const one = await req(env, 'POST', `/api/news/unsubscribe?u=${unsub}`, { ip: ip(1), origin: null, form: 'List-Unsubscribe=One-Click' });
+    assert.deepEqual([one.status, one.json], [200, { ok: true }]);
+    const malformed = await req(env, 'POST', `/api/news/unsubscribe?u=${unsub}`, { ip: ip(1), origin: null, form: 'List-Unsubscribe=Nope' });
+    assert.equal(malformed.status, 400);
+    assert.equal((await post(env, '/api/news/unsubscribe', { ip: ip(1), body: { u: unsub } })).status, 200);
+  });
+  assert.equal(obj.store.consentState(id).news, false, 'the one-click withdrew the news');
+  const all = lines.join('\n');
+  for (const secret of [CODE, unsub, ...states]) assert.ok(!all.includes(secret), `${secret} in a console line:\n${all}`);
+  assert.ok(lines.some((l) => l.includes('oauth discord: token 400')), 'the failed exchange did log its status line (the capture works)');
+});
