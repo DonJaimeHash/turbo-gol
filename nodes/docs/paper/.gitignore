@@ -1,0 +1,6 @@
+# Build output and scratch files.
+out/
+*.html
+build/check.pdf
+build/.browser-profile/
+build/.venv/

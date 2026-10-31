@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="600" viewBox="0 0 760 600" font-family="'Segoe UI', Arial, sans-serif" font-size="12">
+  <title>Community server architecture</title>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d2433"/></marker>
+    <marker id="ahs" viewBox="0 0 10 10" refX="1.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto"><path d="M10,0 L0,5 L10,10 z" fill="#1d2433"/></marker>
+    <marker id="ahg" viewBox="0 0 10 10" refX="8.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2f6f0e"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="760" height="600" fill="#ffffff"/>
+
+  <!-- Group: project infrastructure -->
+  <rect x="340" y="10" width="408" height="548" rx="8" fill="none" stroke="#6b7280" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="352" y="30" font-weight="700" fill="#6b7280">Project infrastructure</text>
+
+  <!-- Group: nodes -->
+  <rect x="16" y="170" width="198" height="290" rx="8" fill="none" stroke="#6b7280" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="202" y="189" text-anchor="end" font-weight="700" fill="#6b7280">Nodes</text>
+
+  <!-- Players -->
+  <rect x="16" y="42" width="198" height="60" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="115" y="67" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Players</text>
+  <text x="115" y="85" text-anchor="middle" fill="#6b7280">web browser</text>
+
+  <!-- Worker -->
+  <rect x="372" y="42" width="364" height="60" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="554" y="67" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Worker: entry point</text>
+  <text x="554" y="85" text-anchor="middle" fill="#6b7280">/api and /nodes routes over HTTPS</text>
+
+  <!-- Matchmakers -->
+  <rect x="610" y="140" width="126" height="75" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="673" y="163" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Matchmakers</text>
+  <text x="673" y="181" text-anchor="middle" fill="#6b7280">one per region</text>
+  <text x="673" y="200" text-anchor="middle" fill="#6b7280">SA NA EU AS OC AF</text>
+
+  <!-- Control plane (node registry) -->
+  <rect x="372" y="140" width="168" height="300" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="2"/>
+  <text x="456" y="164" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Control plane</text>
+  <text x="456" y="182" text-anchor="middle" fill="#6b7280">node registry</text>
+  <line x1="386" y1="194" x2="526" y2="194" stroke="#6b7280" stroke-width="1"/>
+  <g text-anchor="middle" fill="#1d2433">
+    <text x="456" y="216">enrollment and statuses</text>
+    <text x="456" y="240">placement</text>
+    <text x="456" y="264">signed tickets</text>
+    <text x="456" y="288">verification draw</text>
+    <text x="456" y="312">verification queue</text>
+    <text x="456" y="336">verdict cross-check</text>
+    <text x="456" y="360">result delivery</text>
+    <text x="456" y="384">strikes and suspensions</text>
+    <text x="456" y="408">points record</text>
+  </g>
+
+  <!-- Accounts -->
+  <rect x="610" y="262" width="126" height="70" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="673" y="286" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Accounts</text>
+  <text x="673" y="304" text-anchor="middle" fill="#6b7280">ratings and</text>
+  <text x="673" y="320" text-anchor="middle" fill="#6b7280">abandon penalties</text>
+
+  <!-- Object storage -->
+  <rect x="372" y="470" width="364" height="72" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="554" y="493" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Object storage</text>
+  <text x="554" y="512" text-anchor="middle" fill="#6b7280">replays: deleted after 30 days</text>
+  <text x="554" y="530" text-anchor="middle" fill="#6b7280">signed node software releases</text>
+
+  <!-- Community nodes -->
+  <rect x="28" y="200" width="174" height="116" rx="8" fill="#fdf4e7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="115" y="221" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Community nodes</text>
+  <text x="115" y="239" text-anchor="middle" fill="#1d2433">host only</text>
+  <text x="115" y="255" text-anchor="middle" fill="#6b7280">go through probation:</text>
+  <text x="115" y="271" text-anchor="middle" fill="#6b7280">20 verified matches</text>
+  <text x="115" y="289" text-anchor="middle" fill="#1d2433">(stage 2; none</text>
+  <text x="115" y="305" text-anchor="middle" fill="#1d2433">in production today)</text>
+
+  <!-- Project nodes -->
+  <rect x="28" y="330" width="174" height="110" rx="8" fill="#f2f5ee" stroke="#2f6f0e" stroke-width="1.5"/>
+  <text x="115" y="354" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">Project nodes</text>
+  <text x="115" y="374" text-anchor="middle" fill="#1d2433">host + verifier</text>
+  <text x="115" y="392" text-anchor="middle" fill="#1d2433">trusted</text>
+  <text x="115" y="410" text-anchor="middle" fill="#6b7280">re-simulate replays</text>
+  <text x="115" y="428" text-anchor="middle" fill="#6b7280">today: one in São Paulo</text>
+
+  <!-- Arrows: players and Worker -->
+  <line x1="214" y1="60" x2="372" y2="60" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="277" y="53" text-anchor="middle" fill="#1d2433">queue and join</text>
+  <line x1="372" y1="86" x2="214" y2="86" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="277" y="104" text-anchor="middle" fill="#1d2433">node URL +</text>
+  <text x="277" y="118" text-anchor="middle" fill="#1d2433">signed ticket</text>
+
+  <!-- Direct game traffic -->
+  <line x1="60" y1="102" x2="60" y2="170" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="70" y="126" fill="#1d2433">game traffic:</text>
+  <text x="70" y="140" fill="#1d2433">direct WebSocket</text>
+  <text x="70" y="154" fill="#1d2433">to the node (wss)</text>
+
+  <!-- Worker to matchmakers -->
+  <line x1="673" y1="102" x2="673" y2="140" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="665" y="126" text-anchor="end" fill="#1d2433">to their region</text>
+
+  <!-- Placement -->
+  <line x1="610" y1="165" x2="540" y2="165" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="575" y="158" text-anchor="middle" fill="#1d2433">placement</text>
+  <line x1="540" y1="195" x2="610" y2="195" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="575" y="212" text-anchor="middle" fill="#1d2433">node and</text>
+  <text x="575" y="226" text-anchor="middle" fill="#1d2433">tickets</text>
+
+  <!-- Results -->
+  <line x1="540" y1="295" x2="610" y2="295" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="575" y="288" text-anchor="middle" fill="#1d2433">results</text>
+
+  <!-- Registry to storage -->
+  <line x1="420" y1="440" x2="420" y2="470" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="428" y="459" fill="#1d2433">stores the replay (SHA-256)</text>
+
+  <!-- Control link (all nodes) -->
+  <line x1="214" y1="220" x2="372" y2="220" stroke="#1d2433" stroke-width="1.5" marker-start="url(#ahs)" marker-end="url(#ah)"/>
+  <text x="277" y="212" text-anchor="middle" fill="#1d2433">control link</text>
+  <text x="277" y="236" text-anchor="middle" fill="#6b7280">(all nodes)</text>
+
+  <!-- Report and replay -->
+  <line x1="214" y1="280" x2="372" y2="280" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="277" y="258" text-anchor="middle" fill="#1d2433">report and replay</text>
+  <text x="277" y="272" text-anchor="middle" fill="#1d2433">(signed request)</text>
+
+  <!-- Verification job and verdict -->
+  <line x1="372" y1="362" x2="202" y2="362" stroke="#2f6f0e" stroke-width="1.5" marker-end="url(#ahg)"/>
+  <text x="277" y="341" text-anchor="middle" fill="#1d2433">verification</text>
+  <text x="277" y="355" text-anchor="middle" fill="#1d2433">job</text>
+  <line x1="202" y1="410" x2="372" y2="410" stroke="#2f6f0e" stroke-width="1.5" marker-end="url(#ahg)"/>
+  <text x="277" y="403" text-anchor="middle" fill="#1d2433">verdict</text>
+
+  <!-- Replay download by the verifier -->
+  <path d="M372,500 H150 V440" fill="none" stroke="#2f6f0e" stroke-width="1.5" marker-end="url(#ahg)"/>
+  <text x="255" y="493" text-anchor="middle" fill="#1d2433">replay download</text>
+
+  <!-- Signed releases -->
+  <path d="M372,528 H80 V460" fill="none" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="200" y="521" text-anchor="middle" fill="#1d2433">signed releases (updates)</text>
+
+  <!-- Legend -->
+  <rect x="16" y="575" width="14" height="14" rx="3" fill="#f2f5ee" stroke="#2f6f0e" stroke-width="1.5"/>
+  <text x="36" y="587" fill="#1d2433">project (trusted)</text>
+  <rect x="206" y="575" width="14" height="14" rx="3" fill="#fdf4e7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="226" y="587" fill="#1d2433">community</text>
+  <line x1="330" y1="582" x2="364" y2="582" stroke="#2f6f0e" stroke-width="1.5" marker-end="url(#ahg)"/>
+  <text x="372" y="587" fill="#1d2433">verification path</text>
+  <line x1="540" y1="582" x2="574" y2="582" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="582" y="587" fill="#1d2433">other messages</text>
+</svg>

@@ -65,6 +65,7 @@ in as `Demo`).
 | `install/` | Installers: Linux servers, Windows, macOS and Linux desktops |
 | `web/` | The "host a server" page and the browser WebRTC harness |
 | `docs/` | Design documents (Spanish) |
+| `docs/paper/` | The community paper (draft): mathematical model, architecture and roadmap; English canonical, Spanish translation |
 
 ## License
 

@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="800" viewBox="0 0 760 800" font-family="'Segoe UI', Arial, sans-serif" font-size="12">
+  <title>Node state machine</title>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d2433"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="760" height="800" fill="#ffffff"/>
+
+  <!-- States -->
+  <rect x="190" y="20" width="160" height="44" rx="8" fill="#ffffff" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="270" y="47" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">unregistered</text>
+
+  <rect x="190" y="124" width="160" height="46" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <text x="270" y="143" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">pending</text>
+  <text x="270" y="160" text-anchor="middle" fill="#6b7280">no matches</text>
+
+  <rect x="190" y="236" width="160" height="60" rx="8" fill="#fdf4e7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="270" y="256" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">probation</text>
+  <text x="270" y="273" text-anchor="middle" fill="#1d2433">casual only</text>
+  <text x="270" y="289" text-anchor="middle" fill="#6b7280">everything verified (p = 1)</text>
+
+  <rect x="190" y="420" width="160" height="60" rx="8" fill="#f2f5ee" stroke="#2f6f0e" stroke-width="1.5"/>
+  <text x="270" y="440" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">active</text>
+  <text x="270" y="457" text-anchor="middle" fill="#1d2433">ranked and casual</text>
+  <text x="270" y="473" text-anchor="middle" fill="#6b7280">casual: p = 0.2</text>
+
+  <rect x="560" y="236" width="160" height="244" rx="8" fill="#fdf4e7" stroke="#b45309" stroke-width="1.5"/>
+  <text x="640" y="330" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">suspended</text>
+  <text x="640" y="348" text-anchor="middle" fill="#1d2433">24 h cooldown</text>
+  <text x="640" y="372" text-anchor="middle" fill="#6b7280">no new matches;</text>
+  <text x="640" y="390" text-anchor="middle" fill="#6b7280">each strike expires</text>
+  <text x="640" y="406" text-anchor="middle" fill="#6b7280">after 7 days</text>
+
+  <rect x="400" y="560" width="200" height="66" rx="8" fill="#fdf4e7" stroke="#b45309" stroke-width="2.5"/>
+  <text x="500" y="582" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">suspended</text>
+  <text x="500" y="600" text-anchor="middle" fill="#1d2433">manual review</text>
+  <text x="500" y="617" text-anchor="middle" fill="#6b7280">operator's points frozen</text>
+
+  <rect x="420" y="670" width="160" height="52" rx="8" fill="#ffffff" stroke="#1d2433" stroke-width="1.5"/>
+  <rect x="424" y="674" width="152" height="44" rx="6" fill="none" stroke="#1d2433" stroke-width="1"/>
+  <text x="500" y="693" text-anchor="middle" font-size="13" font-weight="700" fill="#1d2433">banned</text>
+  <text x="500" y="710" text-anchor="middle" fill="#6b7280">T11: login refused</text>
+
+  <!-- T1: regular enrollment -->
+  <line x1="270" y1="64" x2="270" y2="124" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="262" y="98" text-anchor="end" font-weight="700" fill="#1d2433">T1</text>
+  <text x="282" y="90" fill="#1d2433">enrollment with a one-time code (valid 1 h)</text>
+  <text x="282" y="106" fill="#6b7280">host role</text>
+
+  <!-- T2: verifier-only enrollment (trusted) -->
+  <path d="M190,42 H16 V466 H190" fill="none" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="103" y="35" text-anchor="middle" fill="#1d2433">verifier-only enrollment</text>
+  <text x="103" y="58" text-anchor="middle" fill="#6b7280">(trusted)</text>
+  <text x="22" y="334" font-weight="700" fill="#1d2433">T2</text>
+
+  <!-- T3: reachable (community) -->
+  <line x1="270" y1="170" x2="270" y2="236" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="262" y="208" text-anchor="end" font-weight="700" fill="#1d2433">T3</text>
+  <text x="282" y="196" fill="#1d2433">community node reachable</text>
+  <text x="282" y="212" fill="#6b7280">(signed HTTPS probe or WebRTC self-test)</text>
+
+  <!-- T4: reachable and trusted -->
+  <path d="M190,147 H106 V440 H190" fill="none" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="148" y="140" text-anchor="middle" fill="#1d2433">reachable and</text>
+  <text x="148" y="163" text-anchor="middle" fill="#1d2433">trusted</text>
+  <text x="112" y="334" font-weight="700" fill="#1d2433">T4</text>
+
+  <!-- T5/T6: promotion -->
+  <line x1="270" y1="296" x2="270" y2="420" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="262" y="362" text-anchor="end" font-weight="700" fill="#1d2433">T5, T6</text>
+  <text x="282" y="346" fill="#1d2433">T6: 20 verified matches</text>
+  <text x="282" y="361" fill="#1d2433">and no verification failure ever</text>
+  <text x="282" y="379" fill="#6b7280">(T5: reachable and trusted)</text>
+
+  <!-- T7/T8 with probation -->
+  <line x1="350" y1="252" x2="560" y2="252" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="355" y="247" font-weight="700" fill="#1d2433">T7</text>
+  <text x="460" y="246" text-anchor="middle" fill="#1d2433">3 strikes in 7 days</text>
+  <line x1="560" y1="280" x2="350" y2="280" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="365" y="275" font-weight="700" fill="#1d2433">T8</text>
+  <text x="455" y="295" text-anchor="middle" fill="#1d2433">after 24 h, if it came from</text>
+  <text x="455" y="309" text-anchor="middle" fill="#1d2433">probation or this is the 2nd</text>
+  <text x="455" y="323" text-anchor="middle" fill="#1d2433">cooldown in 30 days</text>
+
+  <!-- T7/T8 with active -->
+  <line x1="350" y1="436" x2="560" y2="436" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="355" y="431" font-weight="700" fill="#1d2433">T7</text>
+  <text x="460" y="430" text-anchor="middle" fill="#1d2433">3 strikes in 7 days</text>
+  <line x1="560" y1="464" x2="350" y2="464" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="365" y="459" font-weight="700" fill="#1d2433">T8</text>
+  <text x="455" y="479" text-anchor="middle" fill="#1d2433">after 24 h, if it came from</text>
+  <text x="455" y="493" text-anchor="middle" fill="#1d2433">active and this is the 1st</text>
+  <text x="455" y="507" text-anchor="middle" fill="#1d2433">cooldown in 30 days</text>
+
+  <!-- T9: failed verification, from any state except banned -->
+  <circle cx="110" cy="593" r="4" fill="#1d2433"/>
+  <line x1="114" y1="593" x2="400" y2="593" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="120" y="585" font-weight="700" fill="#1d2433">T9</text>
+  <text x="266" y="585" text-anchor="middle" fill="#1d2433">failed verification of one of its matches</text>
+  <text x="255" y="609" text-anchor="middle" fill="#6b7280">from any state except banned</text>
+  <text x="255" y="623" text-anchor="middle" fill="#6b7280">(community nodes only)</text>
+
+  <!-- T10: maintenance decision -->
+  <path d="M440,560 V535 H270 V480" fill="none" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="355" y="528" text-anchor="middle" fill="#1d2433"><tspan font-weight="700">T10</tspan>: active or probation</text>
+  <line x1="500" y1="626" x2="500" y2="670" stroke="#1d2433" stroke-width="1.5" marker-end="url(#ah)"/>
+  <text x="508" y="652" font-weight="700" fill="#1d2433">T10</text>
+
+  <!-- Notes -->
+  <g fill="#6b7280">
+    <text x="16" y="752">T10 (maintenance) can set probation, active, suspended, or banned from any state; never pending.</text>
+    <text x="16" y="769">Moving to probation or active clears the strikes; the verification-failure counter is never cleared.</text>
+    <text x="16" y="786">Trusted nodes skip probation, are never put on cooldown for strikes, and their verification failures only raise an alert.</text>
+  </g>
+</svg>

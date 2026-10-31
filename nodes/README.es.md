@@ -21,6 +21,7 @@ ninguna en los servidores del proyecto.
 | [docs/INTEGRACION.md](docs/INTEGRACION.md) | Los cambios exactos en el Worker y en el cliente para activarlo, aplicados en parte: el plano de control ([6], #28); falta el gancho del matchmaker ([7]) |
 | [docs/PRODUCCION.md](docs/PRODUCCION.md) | Todo lo que falta para usarlo con jugadores reales, por etapas, y el costo de forzar TURN |
 | [docs/BOT.md](docs/BOT.md) | Propuestas, votos y el bot que las implementa |
+| [docs/paper/](docs/paper/README.md) | El paper para la comunidad (borrador): modelo matemático, arquitectura y hoja de ruta; la versión en inglés es la canónica y la española, su traducción |
 
 ## Correrlo
 
