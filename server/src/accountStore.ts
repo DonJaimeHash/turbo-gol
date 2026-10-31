@@ -2757,13 +2757,14 @@ export class AccountStore {
    * An add, a change or a move, proved by the new mailbox (a code typed in the browser that asked, or
    * the mailed link), in one transaction (§2.6): the canon checked again (claimed by another account
    * it is a race, 'taken', unless the row asked to move it from that very account and it still keeps
-   * a way in without it; 'move_refused' otherwise; held for another account's undo, 'taken'); then the
-   * address, its proof 'mail', this account's hint and every other account's hint of that canon gone,
-   * the account's other add / change / reset / reauth rows dead and the row used. A change also holds
-   * the old canon for EMAIL_UNDO_MS (email_holds), stores the undo row for the old address
-   * (`undo`: its nonce and hash, M6's link) and signs out every other refresh family of the account
-   * (`keep`: the caller's token, kept). A move first empties the other account's address and kills
-   * its mailed rows; it keeps its sessions and its providers. `marks`: the canon's mark key (§3.13 step 4).
+   * a way in without it and is no maintainer account; 'move_refused' otherwise; held for another
+   * account's undo, 'taken'); then the address, its proof 'mail', this account's hint and every
+   * other account's hint of that canon gone, the account's other add / change / reset / reauth rows
+   * dead and the row used. A change also holds the old canon for EMAIL_UNDO_MS (email_holds), stores
+   * the undo row for the old address (`undo`: its nonce and hash, M6's link) and signs out every
+   * other refresh family of the account (`keep`: the caller's token, kept). A move first empties the
+   * other account's address and kills its mailed rows; it keeps its sessions and its providers.
+   * `marks`: the canon's mark key (§3.13 step 4).
    */
   applyEmail(rowHash: string, keep: string | null, undo: { nonce: string; hash: string }, now: number, marks?: MarkKeys): EmailApplied | 'expired' | 'taken' | 'move_refused' | 'no_user' {
     return this.tx(() => {
@@ -2778,7 +2779,8 @@ export class AccountStore {
       if (st.kind === 'claimed' && st.userId === id) return 'expired' as const;
       if (st.kind === 'claimed') {
         if (moveFrom !== st.userId) return 'taken' as const;
-        if (this.moveSource(st.userId) === null) return 'move_refused' as const;
+        // A maintainer account's address never moves (§3.12): a row made before it was trusted included.
+        if (this.moveSource(st.userId) === null || this.maintainerIds.has(st.userId)) return 'move_refused' as const;
         from = st.userId;
       }
       if (st.kind === 'held' && st.userId !== id) return 'taken' as const;

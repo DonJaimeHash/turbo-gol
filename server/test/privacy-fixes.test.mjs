@@ -388,3 +388,68 @@ test("the project account takes a pending identity only at level 2: a Discord si
   assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map()), 'reauth_required', 'no level said: none');
   assert.equal(obj.store.linkPending(project, pend, Date.now(), new Map(), 2), 'linked');
 });
+
+// ---- the review of sign-in PR 10: the project account's address never moves to another account ----
+
+const codeIn = (m) => /^(\d{6})$/m.exec(m.text)?.[1] ?? null;
+const alertsSince = (from) => posts.slice(from).map((p) => p.content);
+
+test("another account that asks for the project account's address gets the same answer as for any address, no code reaches the project mailbox, nothing moves, and the staff channel gets the maintainer ALERT", async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  // The project account keeps a way in without its address (Discord): what lets an address move from any other account.
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', discord: 'd-proyecto' });
+  const ana = await account(obj, 'Ana', { email: 'ana@example.com', discord: 'd-ana' });
+  await account(obj, 'Otra', { email: 'otra@example.com' });
+  env.NODE_TRUSTED_OPERATORS = project;
+  const o = await signin(env, 'otra@example.com', ip(0));
+  assert.equal(o.status, 200, JSON.stringify(o.json));
+  const ask = (email) => post(env, '/api/me/email', { ip: ip(0), bearer: o.json.session, body: { email, lang: 'es' } });
+  // A free address: the answer's shape.
+  const free = await ask('libre@example.com');
+  assert.equal(free.status, 200, JSON.stringify(free.json));
+  const sent = outbox.length;
+  const from = posts.length;
+  const r = await ask('Proyecto@Example.com');
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.deepEqual(Object.keys(r.json).sort(), Object.keys(free.json).sort(), 'the same answer (I6)');
+  assert.equal(r.json.to, 'proyecto@example.com');
+  assert.deepEqual(outbox.slice(sent).map((m) => m.to), [], 'no M7 move code to the project mailbox');
+  // The ALERT: the project account, what was refused and the country; not the other account, an address or an IP.
+  const got = alertsSince(from);
+  assert.deepEqual(got, [`**ALERT** \`maintainer Proyecto (${project}) kept its email: another account asked for it (refused), from AR\``]);
+  for (const x of ['Otra', '@', '198.18.']) assert.ok(!got[0].includes(x), `no ${x} in ${got[0]}`);
+  // Whatever code it types, nothing moves (the row was a decoy).
+  const v = await post(env, '/api/me/email/verify', { ip: ip(0), bearer: o.json.session, body: { attempt: r.json.attempt, code: codeIn(outbox.at(-1) ?? { text: '' }) ?? '000000', lang: 'es' } });
+  assert.notEqual(v.status, 200, JSON.stringify(v.json));
+  assert.deepEqual([row(obj, project).email, row(obj, project).email_canon], ['proyecto@example.com', 'proyecto@example.com']);
+  // Anyone else's address still moves the usual way: M7 with its code to Ana, and no ALERT.
+  const before = posts.length;
+  const m = await ask('ana@example.com');
+  assert.equal(m.status, 200);
+  const toAna = outbox.filter((x) => x.to === 'ana@example.com').at(-1);
+  assert.ok(toAna && codeIn(toAna), 'M7 "move" with its code');
+  assert.deepEqual(alertsSince(before), []);
+  const moved = await post(env, '/api/me/email/verify', { ip: ip(0), bearer: o.json.session, body: { attempt: m.json.attempt, code: codeIn(toAna), lang: 'es' } });
+  assert.equal(moved.status, 200, JSON.stringify(moved.json));
+  assert.equal(row(obj, ana).email, null, 'moved from Ana');
+});
+
+test("a move row made before the account was trusted cannot take the project account's address either (409 move_refused)", async () => {
+  const { env, obj, outbox } = makeEnv();
+  const ip = ips();
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', discord: 'd-proyecto' });
+  await account(obj, 'Otra', { email: 'otra@example.com' });
+  env.NODE_TRUSTED_OPERATORS = '';
+  const o = await signin(env, 'otra@example.com', ip(0));
+  const r = await post(env, '/api/me/email', { ip: ip(0), bearer: o.json.session, body: { email: 'proyecto@example.com', lang: 'es' } });
+  assert.equal(r.status, 200);
+  const m7 = outbox.filter((x) => x.to === 'proyecto@example.com').at(-1);
+  const code = m7 ? codeIn(m7) : null;
+  assert.ok(code, 'a real move row (the account was not trusted yet)');
+  // Then the deploy that trusts it: the code no longer moves the address.
+  env.NODE_TRUSTED_OPERATORS = project;
+  const v = await post(env, '/api/me/email/verify', { ip: ip(0), bearer: o.json.session, body: { attempt: r.json.attempt, code, lang: 'es' } });
+  assert.deepEqual([v.status, v.json.error], [409, 'move_refused']);
+  assert.equal(row(obj, project).email, 'proyecto@example.com');
+});

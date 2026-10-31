@@ -873,7 +873,7 @@ export function requirePrimary(c: Pick<RouteContext, 'session'>): SessionClaims 
   return s;
 }
 
-/** How a maintainer account proved itself, in its ALERT line's words: the method only, never an address. */
+/** How a maintainer account proved itself (or what was refused it), in its ALERT line's words: the method only, never an address. */
 const MAINTAINER_PROOF = {
   password: 'signed in with its email and password',
   legacy: 'signed in with its username and password',
@@ -884,17 +884,20 @@ const MAINTAINER_PROOF = {
   discord: 'signed in with Discord',
   reauth: 'confirmed it is them with its password (level 2)',
   reauthCode: 'confirmed it is them with a code by email (level 2)',
+  // Not a sign-in: another account asked for its address (POST /api/me/email), which never moves (§3.12).
+  emailMove: 'kept its email: another account asked for it (refused)',
 } as const;
 export type MaintainerProof = keyof typeof MAINTAINER_PROOF;
 
 /**
- * Every primary sign-in of a NODE_TRUSTED_OPERATORS account, and every level-2 re-authentication of
- * one (the sign-in design's §3.12): an ALERT line in the Worker's log and on the staff channel
+ * Every primary sign-in of a NODE_TRUSTED_OPERATORS account, every level-2 re-authentication of one
+ * and every request of another account for its address (emailMove, refused: §3.12, within that
+ * address's mail cap): an ALERT line in the Worker's log and on the staff channel
  * (NODE_ALERT_WEBHOOK, nodeAlerts.ts AlertHook.audit: each one posted, none merged with another or
  * left out by a limit), after the answer (waitUntil). It names the account, the method and the
- * country of the request (request.cf), and never an IP or an email, so a project session in the
- * wrong hands shows on the channel when it starts. A TV is no primary sign-in (it never reaches a
- * maintainer route). True when the account is one of them.
+ * country of the request (request.cf), and never an IP or an email, nor the other account, so a
+ * project session in the wrong hands shows on the channel when it starts. A TV is no primary
+ * sign-in (it never reaches a maintainer route). True when the account is one of them.
  */
 export function maintainerAlert(c: Pick<RouteContext, 'env' | 'request' | 'waitUntil'>, who: Pick<UserRef, 'userId' | 'username'>, proof: MaintainerProof): boolean {
   if (!trustedOperatorIds(c.env).has(who.userId)) return false;
@@ -2091,9 +2094,11 @@ async function meEmail(c: RouteContext): Promise<Response> {
   const off = await mailRefusal(c);
   if (off !== null) return off;
   const attempt = base64urlEncode(randomBytes(32));
-  const r = await accountsJson<{ resendAt: number; to: string; mail?: MailOrder | null }>(c.env, '/me-email', { userId: s.sub, email: b.email, attempt, lang: langOf(b.lang), ip: ipOf(c.request) });
+  const r = await accountsJson<{ resendAt: number; to: string; mail?: MailOrder | null; alert?: Pick<UserRef, 'userId' | 'username'> }>(c.env, '/me-email', { userId: s.sub, email: b.email, attempt, lang: langOf(b.lang), ip: ipOf(c.request) });
   if (!r.ok) return noStore(r.res);
   sendMail(c, r.data.mail);
+  // The project account's address asked for: never moved (a decoy row, the same answer), and the staff channel hears of it.
+  if (r.data.alert !== undefined) maintainerAlert(c, r.data.alert, 'emailMove');
   return json({ attempt, resendAt: r.data.resendAt, to: r.data.to } satisfies CodeStartAnswer, 200, NO_STORE);
 }
 
