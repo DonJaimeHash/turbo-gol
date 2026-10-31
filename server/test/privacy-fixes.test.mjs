@@ -293,3 +293,32 @@ test('the purge keeps a proof of every consent and withdrawal (kind, version, gr
   assert.equal(obj.store.purgeAccount(id, new Map(), at + DAY).result, 'gone');
   assert.equal(sql(obj, 'SELECT COUNT(*) AS n FROM consent_proofs')[0].n, 0);
 });
+
+// ---- the review of sign-in PR 10: a TV's /api/me carries no maintainer checklist -------------------
+
+/** A TV the phone (`bearer`) signs in: the TV's session. */
+async function tvSession(env, bearer, phoneIp, tvIp) {
+  const st = await post(env, '/api/auth/tv/start', { ip: tvIp });
+  assert.equal(st.status, 200, JSON.stringify(st.json));
+  assert.equal((await post(env, '/api/auth/tv/confirm', { ip: phoneIp, bearer, body: { code: st.json.code } })).status, 200);
+  const tv = await post(env, '/api/auth/tv/poll', { ip: tvIp, body: { code: st.json.code, secret: st.json.secret } });
+  assert.equal(tv.json.state, 'approved', JSON.stringify(tv.json));
+  return tv.json.session;
+}
+
+test("a TV signed in with the phone gets the project account's /api/me without its checklist (`maintainer`), as without its address and hint; the phone keeps it", async () => {
+  const { env, obj } = makeEnv();
+  const ip = ips();
+  const project = await account(obj, 'Proyecto', { email: 'proyecto@example.com', discord: 'd-proyecto' });
+  env.NODE_TRUSTED_OPERATORS = project;
+  const s = await signin(env, 'proyecto@example.com', ip(0));
+  assert.equal(s.status, 200, JSON.stringify(s.json));
+  const onPhone = (await req(env, 'GET', '/api/me', { ip: ip(0), bearer: s.json.session })).json;
+  assert.deepEqual(onPhone.maintainer, { password: true, verifiedEmail: true, waysIn: 2 });
+  const tv = await tvSession(env, s.json.session, ip(0), ip(1));
+  const onTv = await req(env, 'GET', '/api/me', { ip: ip(1), bearer: tv });
+  assert.equal(onTv.status, 200);
+  assert.equal(onTv.json.name, 'Proyecto');
+  for (const k of ['maintainer', 'email', 'emailHint']) assert.equal(k in onTv.json, false, `${k} on a TV: ${JSON.stringify(onTv.json)}`);
+  assert.equal(onTv.headers.get('cache-control'), 'no-store');
+});

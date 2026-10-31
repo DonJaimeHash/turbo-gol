@@ -1106,8 +1106,11 @@ export async function shopClaim(c: CosmeticContext): Promise<Response> {
   return noStore(await accountsCall(c.env, '/shop/claim', { userId: s.sub, item }));
 }
 
-/** MeInfo's fields a TV's session never gets (the design's §3.11): the account's address and a provider's. */
-const TV_HIDDEN = ['email', 'emailHint'] as const;
+/**
+ * MeInfo's fields a TV's session never gets (the design's §3.11): the account's address and a
+ * provider's, and the project account's checklist (`maintainer`: its ways in, none of a TV's work).
+ */
+const TV_HIDDEN = ['email', 'emailHint', 'maintainer'] as const;
 
 async function me(c: RouteContext): Promise<Response> {
   const s = requireAccount(c);
